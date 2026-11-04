@@ -1,0 +1,111 @@
+name: ChatFromExample
+options:
+  bundleIdPrefix: io.chatfrom
+  deploymentTarget:
+    iOS: "15.0"
+packages:
+  ChatFrom:
+    path: ..
+targets:
+  ChatFromExample:
+    type: application
+    platform: iOS
+    sources: [App]
+    dependencies:
+      - package: ChatFrom
+        product: ChatFromSDK
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.chatfrom.example
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: ChatFrom Example
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: Lets you take a picture to send in the chat.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+  ChatFromExampleUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: ChatFromExample
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+  ChatFromExampleUIKit:
+    type: application
+    platform: iOS
+    sources: [UIKitApp]
+    dependencies:
+      - package: ChatFrom
+        product: ChatFromSDK
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.chatfrom.example.uikit
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: UIKitApp/Info.plist
+      properties:
+        CFBundleDisplayName: ChatFrom UIKit
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+  ChatFromExampleUIKitUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UIKitUITests]
+    dependencies:
+      - target: ChatFromExampleUIKit
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+schemes:
+  ChatFromExampleUIKit:
+    build:
+      targets:
+        ChatFromExampleUIKit: all
+    test:
+      targets:
+        - ChatFromExampleUIKitUITests
+  ChatFromExample:
+    build:
+      targets:
+        ChatFromExample: all
+    test:
+      targets:
+        - ChatFromExampleUITests

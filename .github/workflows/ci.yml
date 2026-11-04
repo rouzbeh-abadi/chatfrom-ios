@@ -1,0 +1,64 @@
+# Builds the package and runs its unit tests on an iPhone simulator, and builds
+# the two example apps, on every push to main and every pull request. The UI
+# tests in Example/ need the Node test server and take a quarter of an hour, so
+# they run on a Mac: README.md, Tests, says how.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and unit tests
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # One that xcodebuild offers for the scheme, so the runner's Xcode can run it, with the newest iOS there: a simulator named in this
+      # file would stop the job when the runner image moves on. Booted and waited for, or the tests can find it busy.
+      - name: Pick an iPhone simulator
+        id: simulator
+        run: |
+          udid=$(xcodebuild -showdestinations -scheme ChatFrom | python3 -c '
+          import re, sys
+          found = [(tuple(map(int, os.split("."))), udid) for udid, os, name in re.findall(r"platform:iOS Simulator,(?: arch:\w+,)? id:([0-9A-F-]{36}), OS:([0-9.]+), name:([^}]+?) \}", sys.stdin.read()) if name.startswith("iPhone")]
+          print(max(found)[1])
+          ')
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl bootstatus "$udid" -b
+
+      - name: Unit tests
+        run: xcodebuild test -quiet -scheme ChatFrom -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}"
+
+  examples:
+    name: Build the example apps
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The project is made from Example/project.yml, as README.md says; it is not in the repository.
+      - name: Make the example project
+        run: |
+          brew install xcodegen
+          cd Example && xcodegen generate
+
+      - name: Build the SwiftUI and UIKit apps
+        run: |
+          for scheme in ChatFromExample ChatFromExampleUIKit; do
+            xcodebuild build -quiet -project Example/ChatFromExample.xcodeproj -scheme "$scheme" -destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO
+          done

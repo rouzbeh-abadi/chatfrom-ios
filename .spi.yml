@@ -1,0 +1,8 @@
+# For the Swift Package Index: the package is for iOS alone, so it is built for
+# iOS there, not for macOS or Linux, and its documentation is built from the
+# ChatFromSDK target.
+version: 1
+builder:
+  configs:
+    - platform: ios
+      documentation_targets: [ChatFromSDK]
