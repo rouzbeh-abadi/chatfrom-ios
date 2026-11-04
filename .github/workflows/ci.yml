@@ -26,15 +26,20 @@ jobs:
         with:
           persist-credentials: false
 
-      # One that xcodebuild offers for the scheme, so the runner's Xcode can run it, with the newest iOS there: a simulator named in this
-      # file would stop the job when the runner image moves on. Booted and waited for, or the tests can find it busy.
+      # The newest iPhone on an iOS that the runner's Xcode supports: a simulator named in this file would stop the job when the runner
+      # image moves on, and a newer runtime than the Xcode's SDK cannot run the tests. A runtime for one device only, such as
+      # iOS-27-2-iPhone19-4, is passed over. Booted and waited for, or the tests can find it busy.
       - name: Pick an iPhone simulator
         id: simulator
         run: |
-          udid=$(xcodebuild -showdestinations -scheme ChatFrom | python3 -c '
-          import re, sys
-          found = [(tuple(map(int, os.split("."))), udid) for udid, os, name in re.findall(r"platform:iOS Simulator,(?: arch:\w+,)? id:([0-9A-F-]{36}), OS:([0-9.]+), name:([^}]+?) \}", sys.stdin.read()) if name.startswith("iPhone")]
-          print(max(found)[1])
+          udid=$(python3 -c '
+          import json, re, subprocess
+          sdks = json.loads(subprocess.check_output(["xcodebuild", "-showsdks", "-json"]))
+          sdk = max(tuple(map(int, s["platformVersion"].split(".")))[:2] for s in sdks if s.get("platform") == "iphonesimulator")
+          devices = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "--json"]))["devices"]
+          versions = {r: tuple(map(int, m.groups())) for r in devices if (m := re.fullmatch(r".*\.iOS-(\d+)-(\d+)", r))}
+          usable = sorted((r for r in versions if versions[r] <= sdk), key=versions.get, reverse=True)
+          print(next(d["udid"] for r in usable for d in devices[r] if d["name"].startswith("iPhone")))
           ')
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
           xcrun simctl bootstatus "$udid" -b
