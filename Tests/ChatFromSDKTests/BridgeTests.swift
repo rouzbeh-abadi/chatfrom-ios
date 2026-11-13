@@ -377,6 +377,21 @@ final class PurchasesTests: XCTestCase {
         XCTAssertEqual(hub.user.purchases.revenueCatId, next)
     }
 
+    func testASecondCallForTheSameSignOutLeavesTheNextCustomersId() async {
+        hub.identify(userId: "sara@example.com", userToken: nil)
+        hub.revenueCatAppUserId = anonymous
+        let first = expectation(description: "the first call")
+        let second = expectation(description: "the second call")
+        hub.logout { first.fulfill() }
+        let next = "$RCAnonymousID:" + String(repeating: "fedc9876", count: 4)
+        hub.revenueCatAppUserId = next
+        // Another part of the app that reacts to the same sign-out.
+        hub.logout { second.fulfill() }
+        XCTAssertEqual(hub.user.purchases.revenueCatId, next)
+        await fulfillment(of: [first, second], timeout: 10)
+        XCTAssertEqual(hub.user.purchases.revenueCatId, next)
+    }
+
     func testEverySignOutForgetsTheRevenueCatIdEvenWithNobodyToForget() async {
         let first = expectation(description: "nobody left")
         hub.logout { first.fulfill() }

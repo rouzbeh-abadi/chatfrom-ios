@@ -28,6 +28,9 @@ final class Hub {
 
     /// RevenueCat's id for the customer, as the app set it.
     private var revenueCatIdSet: String?
+    /// Sign-outs begun in this run, and how many had begun when the id was set: one set after a sign-out began is the next customer's.
+    private var signOuts = 0
+    private var revenueCatIdSince = 0
 
     /// As the app set it. Only an anonymous one reaches a page.
     var revenueCatAppUserId: String? {
@@ -35,6 +38,7 @@ final class Hub {
         set {
             guard newValue != revenueCatIdSet else { return }
             revenueCatIdSet = newValue
+            revenueCatIdSince = signOuts
             let anonymous = newValue.flatMap { RevenueCatId.isAnonymous($0) ? $0 : nil }
             #if DEBUG
             if newValue != nil, anonymous == nil {
@@ -366,15 +370,12 @@ final class Hub {
 
     func logout(completion: (() -> Void)?) {
         // The RevenueCat id goes at every call, with someone to forget or not: once a customer signs in, RevenueCat can join their anonymous id
-        // to them, so it would name them to the next person. The app sets the next customer's after this. The App Store's word stays, since it
-        // is about the Apple ID on the device, which signing out of the app does not change.
-        let droppedId = revenueCatIdSet != nil
-        if droppedId {
-            #if DEBUG
-            chatLog.notice("logout forgot revenueCatAppUserId, as it does each time. Set the next customer's after it.")
-            #endif
-            dropRevenueCatId()
-        }
+        // to them, so it would name them to the next person. The app sets the next customer's after this, and one it set after a sign-out still
+        // under way began, with nobody named since, is that next customer's: a second call for the same sign-out leaves it. The App Store's
+        // word stays, since it is about the Apple ID on the device, which signing out of the app does not change.
+        let forTheNext = isForgetting && person == nil && revenueCatIdSince == signOuts
+        let droppedId = revenueCatIdSet != nil && !forTheNext
+        if droppedId { dropRevenueCatId() }
         let someone = person != nil || defaults.bool(forKey: someoneNamedKey)
         guard someone || isForgetting else {
             if droppedId { userChanged() }
@@ -389,6 +390,7 @@ final class Hub {
         }
         person = nil
         forgetting += 1
+        signOuts += 1
         // Nothing is told until the data is removed.
         sessions.values.forEach { $0.personChanged() }
         // Removed first, and only then is a running page told, or the removal takes the new visitor id the page has just written.
