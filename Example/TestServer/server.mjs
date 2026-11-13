@@ -54,6 +54,7 @@ const page = (id, count) => {
   <nav>
     <button id="talk" type="button">Talk</button>
     <button id="mark" type="button">Show the mark</button>
+    <button id="bought" type="button">Show the purchases</button>
     <a id="outside" href="https://example.com/" target="_blank" rel="noreferrer">Outside</a>
     <a id="home" href="/">Home</a>
     <input id="file" type="file" aria-label="Attach">
@@ -69,16 +70,19 @@ const page = (id, count) => {
   };
   const tell = (message) => window.webkit?.messageHandlers?.chatfrom?.postMessage({ ...message, bridge: 1 });
   const who = () => { const a = window.ChatFromApp; return "key=" + (a?.userKey ? a.userKey.slice(0, 6) : "none") + " token=" + (a?.userToken ?? "none"); };
+  const bought = () => { const a = window.ChatFromApp; return "rc=" + (a?.revenueCatId ?? "none") + " store=" + (Array.isArray(a?.appStore) ? a.appStore.length : 0); };
   const stored = () => localStorage.getItem("mark") ?? "empty";
   say("loaded " + who() + " mark=" + stored());
+  say("purchases " + bought());
   say("path " + location.pathname);
   say("load number ${count}");
   localStorage.setItem("mark", "kept-" + Date.now());
   addEventListener("chatfrom:new-chat", () => { say("heard new-chat"); tell({ type: "chatfrom:talking", on: false }); });
-  addEventListener("chatfrom:token", () => say("heard token " + who()));
+  addEventListener("chatfrom:token", () => { say("heard token " + who()); say("purchases " + bought()); });
   addEventListener("chatfrom:sign-out", () => { say("heard sign-out mark=" + stored()); window.ChatFromApp = {}; localStorage.setItem("mark", "new-visitor"); tell({ type: "chatfrom:talking", on: false }); });
   document.getElementById("talk").onclick = () => { say("talking"); tell({ type: "chatfrom:talking", on: true }); };
   document.getElementById("mark").onclick = () => say("mark now " + stored());
+  document.getElementById("bought").onclick = () => say("purchases now " + bought());
   // Written every 5 seconds with the time, so a test can tell the page kept running while the chat was closed.
   let ticks = 0;
   setInterval(() => { ticks++; if (ticks % 5 === 0 && ticks <= 60) say("tick " + ticks + " at " + Date.now()); }, 1000);

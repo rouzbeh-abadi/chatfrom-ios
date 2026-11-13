@@ -69,7 +69,7 @@ final class BridgeScriptTests: XCTestCase {
     }
 
     func testSetsThePersonBeforeThePageRunsOnThatChatbotsPageOnly() throws {
-        let script = BridgeScript.userScript(for: Person(userKey: "abc", userToken: "t1"), page: page)
+        let script = BridgeScript.userScript(for: AppUser(person: Person(userKey: "abc", userToken: "t1")), page: page)
         let onThePage = try run(script).objectForKeyedSubscript("ChatFromApp")
         XCTAssertEqual(onThePage?.objectForKeyedSubscript("userKey").toString(), "abc")
         XCTAssertEqual(onThePage?.objectForKeyedSubscript("userToken").toString(), "t1")
@@ -82,7 +82,7 @@ final class BridgeScriptTests: XCTestCase {
 
     func testAPortIsPartOfTheAddress() throws {
         let local = try XCTUnwrap(URL(string: "http://localhost:4599/mobile/bot-1"))
-        let script = BridgeScript.userScript(for: Person(userKey: "abc", userToken: nil), page: local)
+        let script = BridgeScript.userScript(for: AppUser(person: Person(userKey: "abc", userToken: nil)), page: local)
         XCTAssertEqual(try run(script, origin: "http://localhost:4599").objectForKeyedSubscript("ChatFromApp")?.objectForKeyedSubscript("userKey").toString(), "abc")
         XCTAssertEqual(try run(script, origin: "http://localhost:80").objectForKeyedSubscript("ChatFromApp")?.isUndefined, true)
     }
@@ -98,16 +98,32 @@ final class BridgeScriptTests: XCTestCase {
     }
 
     func testNobodyIsAnEmptyObject() {
-        XCTAssertEqual(BridgeScript.json(nil), "{}")
-        XCTAssertEqual(BridgeScript.json(Person(userKey: "abc", userToken: nil)), "{\"userKey\":\"abc\"}")
+        XCTAssertEqual(BridgeScript.json(AppUser()), "{}")
+        XCTAssertEqual(BridgeScript.json(AppUser(person: Person(userKey: "abc", userToken: nil))), "{\"userKey\":\"abc\"}")
+    }
+
+    func testSubscriptionsAreThereWithOrWithoutAPerson() {
+        let proofs = [AppStoreProof(transaction: "t1", renewal: "r1"), AppStoreProof(transaction: "t2", renewal: nil)]
+        XCTAssertEqual(
+            BridgeScript.json(AppUser(purchases: Purchases(revenueCatId: "rc", appStore: proofs))),
+            "{\"appStore\":[{\"renewal\":\"r1\",\"transaction\":\"t1\"},{\"transaction\":\"t2\"}],\"revenueCatId\":\"rc\"}"
+        )
+        XCTAssertEqual(
+            BridgeScript.json(AppUser(person: Person(userKey: "abc", userToken: "t"), purchases: Purchases(revenueCatId: "rc"))),
+            "{\"revenueCatId\":\"rc\",\"userKey\":\"abc\",\"userToken\":\"t\"}"
+        )
     }
 
     func testATokenCannotBreakOutOfTheScript() throws {
         // Run as the script it becomes: the words come back whole, and nothing in them ran.
         for hostile in ["\"; window.ran = true; //", "\\\"; window.ran = true; //", "</script><script>window.ran = true</script>", "line\nbreak", "\u{2028}window.ran = true"] {
-            let script = BridgeScript.userScript(for: Person(userKey: "k", userToken: hostile), page: page)
+            let script = BridgeScript.userScript(for: AppUser(person: Person(userKey: "k", userToken: hostile), purchases: Purchases(revenueCatId: hostile, appStore: [AppStoreProof(transaction: hostile, renewal: hostile)])), page: page)
             let window = try run(script)
-            XCTAssertEqual(window.objectForKeyedSubscript("ChatFromApp")?.objectForKeyedSubscript("userToken").toString(), hostile)
+            let app = window.objectForKeyedSubscript("ChatFromApp")
+            XCTAssertEqual(app?.objectForKeyedSubscript("userToken").toString(), hostile)
+            XCTAssertEqual(app?.objectForKeyedSubscript("revenueCatId").toString(), hostile)
+            XCTAssertEqual(app?.objectForKeyedSubscript("appStore").atIndex(0).objectForKeyedSubscript("transaction").toString(), hostile)
+            XCTAssertEqual(app?.objectForKeyedSubscript("appStore").atIndex(0).objectForKeyedSubscript("renewal").toString(), hostile)
             XCTAssertEqual(window.objectForKeyedSubscript("ran")?.isUndefined, true, hostile)
         }
     }
@@ -117,7 +133,7 @@ final class BridgeScriptTests: XCTestCase {
         context.evaluateScript("var events = []; var window = { dispatchEvent: function (e) { events.push(e.type); } }; function Event(type) { this.type = type; }")
         context.evaluateScript(BridgeScript.dispatch(.signOut))
         context.evaluateScript(BridgeScript.dispatch(.newChat))
-        context.evaluateScript(BridgeScript.setPerson(nil))
+        context.evaluateScript(BridgeScript.setUser(AppUser()))
         context.evaluateScript(BridgeScript.dispatch(.textSize))
         XCTAssertEqual(context.evaluateScript("events.join()")?.toString(), "chatfrom:sign-out,chatfrom:new-chat,chatfrom:token,chatfrom:text-size")
         XCTAssertEqual(context.evaluateScript("JSON.stringify(window.ChatFromApp)")?.toString(), "{}")
@@ -132,6 +148,18 @@ final class UserTokenTests: XCTestCase {
         }
         for bad in ["", "has spaces in it", "base64+with/padding==", "caf\u{00E9}", String(repeating: "a", count: 1025), "\u{0661}"] {
             XCTAssertFalse(UserToken.isAccepted(bad), bad)
+        }
+    }
+}
+
+final class RevenueCatIdTests: XCTestCase {
+    func testTakesOnlyRevenueCatsAnonymousIds() {
+        // The same as ANONYMOUS_ID in libs/app-subscriber.ts.
+        for good in ["$RCAnonymousID:" + String(repeating: "0123abcd", count: 4), "$RCAnonymousID:" + String(repeating: "ABCDEF09", count: 4)] {
+            XCTAssertTrue(RevenueCatId.isAnonymous(good), good)
+        }
+        for bad in ["", "user-42", "sara@example.com", "$RCAnonymousID:", "$RCAnonymousID:" + String(repeating: "a", count: 31), "$RCAnonymousID:" + String(repeating: "a", count: 33), "$RCAnonymousID:" + String(repeating: "g", count: 32), "$rcanonymousid:" + String(repeating: "a", count: 32), " $RCAnonymousID:" + String(repeating: "a", count: 32), "$RCAnonymousID:" + String(repeating: "a", count: 31) + "\u{0661}", "$RCAnonymousID:" + String(repeating: "a", count: 31) + "a\u{0301}"] {
+            XCTAssertFalse(RevenueCatId.isAnonymous(bad), bad)
         }
     }
 }
@@ -288,5 +316,59 @@ final class ChatIconTests: XCTestCase {
             }
         }
         return count
+    }
+}
+
+@MainActor
+final class PurchasesTests: XCTestCase {
+    private let anonymous = "$RCAnonymousID:" + String(repeating: "0123abcd", count: 4)
+
+    override func tearDown() async throws {
+        Hub.shared.revenueCatAppUserId = nil
+        Hub.shared.sharesAppStoreSubscriptions = false
+    }
+
+    func testOnlyAnAnonymousRevenueCatIdReachesAPage() {
+        let hub = Hub.shared
+        hub.revenueCatAppUserId = "user-42"
+        XCTAssertEqual(hub.revenueCatAppUserId, "user-42", "the app's own value, as it set it")
+        XCTAssertNil(hub.user.purchases.revenueCatId)
+        hub.revenueCatAppUserId = anonymous
+        XCTAssertEqual(hub.user.purchases.revenueCatId, anonymous)
+        hub.revenueCatAppUserId = nil
+        XCTAssertNil(hub.user.purchases.revenueCatId)
+    }
+
+    func testASignOutForgetsTheRevenueCatIdAtOnceAndANewOneSetAfterItStays() async {
+        let hub = Hub.shared
+        hub.identify(userId: "sara@example.com", userToken: nil)
+        hub.revenueCatAppUserId = anonymous
+        let forgotten = expectation(description: "forgotten")
+        hub.logout { forgotten.fulfill() }
+        XCTAssertNil(hub.revenueCatAppUserId)
+        XCTAssertNil(hub.user.purchases.revenueCatId)
+        let next = "$RCAnonymousID:" + String(repeating: "fedc9876", count: 4)
+        hub.revenueCatAppUserId = next
+        await fulfillment(of: [forgotten], timeout: 10)
+        XCTAssertNil(hub.person)
+        XCTAssertEqual(hub.user.purchases.revenueCatId, next)
+    }
+
+    func testWithNobodyToForgetTheAnonymousIdStays() {
+        let hub = Hub.shared
+        XCTAssertNil(hub.person)
+        hub.revenueCatAppUserId = anonymous
+        // Nobody was named on this simulator since the last sign-out finished, so there is nothing to forget.
+        if !UserDefaults(suiteName: "io.chatfrom.sdk")!.bool(forKey: "someone-named") {
+            hub.logout(completion: nil)
+            XCTAssertEqual(hub.user.purchases.revenueCatId, anonymous)
+        }
+    }
+
+    func testTurningTheAppStoreOffDropsWhatItRead() {
+        let hub = Hub.shared
+        hub.sharesAppStoreSubscriptions = true
+        hub.sharesAppStoreSubscriptions = false
+        XCTAssertEqual(hub.user.purchases.appStore, [])
     }
 }

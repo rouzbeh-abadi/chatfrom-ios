@@ -11,7 +11,7 @@ The chat needs iOS 16.4 or later. The package links from iOS 15, so an app that 
 In Xcode, choose **File > Add Package Dependencies**, enter `https://github.com/rouzbeh-abadi/chatfrom-ios`, set **Dependency Rule** to **Up to Next Minor Version**, and add the **ChatFromSDK** library. Before 1.0, a minor version may change the API, which Xcode's default rule would take in. Or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/rouzbeh-abadi/chatfrom-ios", .upToNextMinor(from: "0.1.0")),
+.package(url: "https://github.com/rouzbeh-abadi/chatfrom-ios", .upToNextMinor(from: "0.2.0")),
 
 // and in your target's dependencies:
 .product(name: "ChatFromSDK", package: "chatfrom-ios"),
@@ -99,11 +99,32 @@ A token running out is not a sign-out: just call `identify` again with the new o
 
 If your app ends a session without calling `logout()`, and the next person opens the chat before your app has named them, they will see the last chat. The SDK cannot know the session ended, so this one is yours.
 
+## Questions about subscriptions
+
+With **RevenueCat** connected to the chatbot under Tools, a customer can ask about their own subscription: whether it is active or in a trial, when it renews or ends, a payment that failed, and where to manage it. The chatbot only reads, and only for the customer your app vouches for, never one someone names in the chat. Your app vouches in one of these ways, and ChatFrom checks each on every message:
+
+```swift
+// A token for the signed-in customer: from your server, or RevenueCat's own access token.
+ChatFrom.identify(userId: user.id, userToken: userToken)
+
+// RevenueCat's anonymous id, for a customer who has not signed in, if the chatbot's owner allowed anonymous ids.
+ChatFrom.revenueCatAppUserId = Purchases.shared.appUserID
+
+// The App Store's own word on the subscriptions, if the owner entered your bundle id. Off unless you turn it on.
+ChatFrom.sharesAppStoreSubscriptions = true
+```
+
+- **A token from your server** names the customer's RevenueCat app user id in `sub`, signed HS256 with the signing secret the RevenueCat card showed, with an `exp` at most 24 hours away. Sign it on your server, never in the app, and pass it as `userToken`. It also reaches the tool servers marked for the user token.
+- **`revenueCatAppUserId`** is passed on only when it is one of RevenueCat's anonymous ids (`$RCAnonymousID:` and 32 hex digits), which nobody can guess. An id you chose could be anyone's, so for a signed-in customer use a token; a debug build says so in the Console. Set it again whenever RevenueCat's id changes. `logout()` forgets it, so set the next customer's after that.
+- **`sharesAppStoreSubscriptions`** reads the app's subscriptions with StoreKit 2, asking the person nothing, and passes on what Apple signed, which ChatFrom checks with Apple's own certificate. It reads them again when the app comes to the front and when the chat opens. They are about whoever is signed in to the App Store on the device, which signing out of your app does not change, so `logout()` leaves them. Purchases made with Xcode's StoreKit testing are signed by Xcode, not Apple, so ChatFrom does not take them: try it with a sandbox account.
+
+The [RevenueCat guide on chatfrom.io](https://chatfrom.io/docs/connections/revenuecat) has the owner's side.
+
 ## What your app has to do
 
 - **Camera:** on a device with a camera, the file picker can offer to take a photo. Add `NSCameraUsageDescription` to your `Info.plist`, since iOS ends an app that reaches for the camera without it. A debug build reminds you in the Console, as the app first uses the chat.
 - **Consent:** the answers come from an AI model through ChatFrom, so Apple's rule on sharing personal data with a third party's AI (App Review Guideline 5.1.2(i)) is yours to meet: say so, and get consent before someone first uses the chat. The bubble and rows load the chat page and open it on a tap, so call `start`, or show a row, only once you have that consent. To ask on the tap itself, use a button of your own that asks first, then calls `ChatFrom.open`.
-- **Privacy:** your privacy notice has to cover what people write to the chatbot, and what its tools ask for, such as a name, an email address or a phone number to book a call. The SDK's privacy manifest declares these, so Xcode's privacy report lists them; App Store Connect's privacy answers are yours.
+- **Privacy:** your privacy notice has to cover what people write to the chatbot, and what its tools ask for, such as a name, an email address or a phone number to book a call, and the subscriptions the chat reads when you share them. The SDK's privacy manifest declares these, purchase history among them, so Xcode's privacy report lists them; App Store Connect's privacy answers are yours.
 - **App-Bound Domains:** if your `Info.plist` has `WKAppBoundDomains`, add `chatfrom.io` to it. WebKit runs no script in a page outside that list, in any of the app's web views, so the chat could not load. A debug build says so in the Console.
 - **Other languages:** the chat's own words are the page's. For the few the SDK draws itself, set `ChatFrom.strings`.
 
@@ -111,7 +132,7 @@ If your app ends a session without calling `logout()`, and the next person opens
 
 The chat and a random visitor id are kept in the web view's storage for ChatFrom's site, as they are in a browser, by your **Remember returning visitors** setting under Deploy: across launches when it is on, and for the app's run when it is off. A hash of the person's id sits beside them, to notice when the person changes.
 
-The SDK itself stores two things in `UserDefaults`, in a store of its own: a random value for that hash, and whether someone is signed in. It never stores the token.
+The SDK itself stores two things in `UserDefaults`, in a store of its own: a random value for that hash, and whether someone is signed in. It never stores the token, the RevenueCat id or the App Store's subscriptions.
 
 The web view's storage is the app's default one, shared with your other web views. Clearing all of it, with `WKWebsiteDataStore.default()`, also forgets remembered chats. `stop()` removes the bubble only: the chat page stays loaded for the app's run, for rows and `open`, and `logout()` is what forgets the person.
 

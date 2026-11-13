@@ -13,6 +13,26 @@ struct Person: Equatable {
     let userToken: String?
 }
 
+/// What the app shows of its customer's subscriptions, for chatbots with the RevenueCat tool. ChatFrom checks every part before it reads anything.
+struct Purchases: Equatable {
+    /// RevenueCat's id for a customer the app has not named, which nobody can guess. Any other id is the app's own, and goes as a token from the app's server instead.
+    var revenueCatId: String?
+    /// The App Store's signed word on each of the customer's subscriptions to the app.
+    var appStore: [AppStoreProof] = []
+}
+
+/// One subscription as StoreKit 2 signed it: the JWS of its latest transaction, and of its renewal info.
+struct AppStoreProof: Equatable {
+    let transaction: String
+    let renewal: String?
+}
+
+/// What a page is told of whoever is using the app: the person, once the app has named them, and what it shows of their subscriptions, which it may do for someone it has not named.
+struct AppUser: Equatable {
+    var person: Person?
+    var purchases = Purchases()
+}
+
 /// What the SDK can tell a running page.
 enum BridgeEvent: String {
     case newChat = "chatfrom:new-chat"
@@ -53,13 +73,13 @@ enum BridgeMessage: Equatable {
 
 enum BridgeScript {
     /// Runs before the page's own scripts, and sets the person on this chatbot's page only.
-    static func userScript(for person: Person?, page: URL) -> String {
-        "if (location.origin + location.pathname === \(quoted(page.absoluteString))) { window.ChatFromApp = \(json(person)); }"
+    static func userScript(for user: AppUser, page: URL) -> String {
+        "if (location.origin + location.pathname === \(quoted(page.absoluteString))) { window.ChatFromApp = \(json(user)); }"
     }
 
-    /// Tells a running page who it is now, or that their token changed.
-    static func setPerson(_ person: Person?) -> String {
-        "window.ChatFromApp = \(json(person)); \(dispatch(.token))"
+    /// Tells a running page who it is now, or that their token or subscriptions changed.
+    static func setUser(_ user: AppUser) -> String {
+        "window.ChatFromApp = \(json(user)); \(dispatch(.token))"
     }
 
     static func dispatch(_ event: BridgeEvent) -> String {
@@ -74,11 +94,20 @@ enum BridgeScript {
         "(document.getElementById(\"chatfrom-text-size\") || document.head.appendChild(Object.assign(document.createElement(\"style\"), { id: \"chatfrom-text-size\" }))).textContent = \"html { -webkit-text-size-adjust: \(Int((scale * 100).rounded()))% !important; }\";"
     }
 
-    static func json(_ person: Person?) -> String {
-        var fields: [String: String] = [:]
-        if let person {
+    /// window.ChatFromApp as libs/app-bridge.ts reads it.
+    static func json(_ user: AppUser) -> String {
+        var fields: [String: Any] = [:]
+        if let person = user.person {
             fields["userKey"] = person.userKey
             if let token = person.userToken { fields["userToken"] = token }
+        }
+        if let id = user.purchases.revenueCatId { fields["revenueCatId"] = id }
+        if !user.purchases.appStore.isEmpty {
+            fields["appStore"] = user.purchases.appStore.map { proof -> [String: String] in
+                var entry = ["transaction": proof.transaction]
+                if let renewal = proof.renewal { entry["renewal"] = renewal }
+                return entry
+            }
         }
         guard let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]), let text = String(data: data, encoding: .utf8) else { return "{}" }
         return text
@@ -113,6 +142,19 @@ enum UserToken {
         (1...1024).contains(token.count) && token.unicodeScalars.allSatisfy { scalar in
             scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || "._~-".unicodeScalars.contains(scalar))
         }
+    }
+}
+
+/// What ChatFrom takes as a RevenueCat id from an app with no token, as ANONYMOUS_ID in the app's libs/app-subscriber.ts has it: RevenueCat's own id
+/// for a customer the app has not named, `$RCAnonymousID:` and 32 hex digits, which nobody can guess. An id the app chose could be anyone's, so the SDK
+/// does not pass one on.
+enum RevenueCatId {
+    private static let prefix = "$RCAnonymousID:"
+
+    static func isAnonymous(_ id: String) -> Bool {
+        guard id.hasPrefix(prefix) else { return false }
+        let digits = id.utf8.dropFirst(prefix.utf8.count)
+        return digits.count == 32 && digits.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
     }
 }
 

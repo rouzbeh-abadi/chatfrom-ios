@@ -116,6 +116,15 @@ final class ChatFromUITests: XCTestCase {
         XCTAssertTrue(closeButton.waitForNonExistence(timeout: 5))
     }
 
+    /// Taps a button under Account that can be below the screen, since a form holds only the rows it shows, then goes back up to the row.
+    private func tapLower(_ title: String, file: StaticString = #filePath, line: UInt = #line) {
+        let button = app.buttons[title]
+        for _ in 0..<4 where !(button.exists && button.isHittable) { app.swipeUp() }
+        XCTAssertTrue(button.isHittable, "no \(title) button", file: file, line: line)
+        button.tap()
+        for _ in 0..<4 where !(app.buttons["chatfrom.row"].exists && app.buttons["chatfrom.row"].isHittable) { app.swipeDown() }
+    }
+
     /// Whoever an earlier test left signed in goes first, so a sign-out here starts from nobody.
     private func signOutWhoeverIsLeft() {
         app.buttons["Sign in as Sara"].tap()
@@ -395,6 +404,38 @@ final class ChatFromUITests: XCTestCase {
         let tomAt = try XCTUnwrap(said.firstIndex { $0.contains("token-tom") }, "\(said)")
         XCTAssertLessThan(signedOutAt, tomAt, "\(said)")
         XCTAssertTrue(said[signedOutAt].hasSuffix("mark=empty"), "the event came before the removal: \(said)")
+    }
+
+    // MARK: Subscriptions
+
+    func testOnlyAnAnonymousRevenueCatIdReachesThePageAndASignOutForgetsIt() {
+        launch()
+        goToAccount()
+        signOutWhoeverIsLeft()
+        tapLower("Use a RevenueCat id of the app's own")
+        openFromRow()
+        expectLog("purchases rc=none store=0")
+        close()
+
+        tapLower("Use an anonymous RevenueCat id")
+        app.buttons["Sign in as Sara"].tap()
+        openFromRow()
+        expectLog("purchases rc=$RCAnonymousID:0123abcd")
+        close()
+
+        app.buttons["Sign out"].tap()
+        XCTAssertTrue(app.staticTexts["Signed out 2 times"].waitForExistence(timeout: 8))
+        openFromRow()
+        expectLog("heard sign-out")
+        web.buttons["Show the purchases"].tap()
+        expectLog("purchases now rc=none store=0")
+        close()
+
+        // The next customer's, set after the sign-out, as the README says.
+        tapLower("Use an anonymous RevenueCat id")
+        openFromRow()
+        web.buttons["Show the purchases"].tap()
+        XCTAssertTrue(lines("purchases now rc=$RCAnonymousID:0123abcd").firstMatch.waitForExistence(timeout: 8), "\(web.staticTexts.allElementsBoundByIndex.map(\.label))")
     }
 
     func testASignOutReachesAPageAFailedReloadLeftRunning() throws {

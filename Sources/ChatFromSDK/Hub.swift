@@ -18,8 +18,41 @@ final class Hub {
     var pageMaxAge = Freshness.maxAway
     var strings = ChatFromStrings()
     private(set) var person: Person?
+    /// What the app shows of its customer's subscriptions, as pages get it.
+    private(set) var purchases = Purchases()
+    /// Everything a page is told of whoever is using the app.
+    var user: AppUser { AppUser(person: person, purchases: purchases) }
     /// A sign-out is removing stored data, and nothing is told anything until that has finished.
     var isForgetting: Bool { forgetting > 0 }
+
+    /// RevenueCat's id for the customer, as the app set it. Only an anonymous one reaches a page.
+    var revenueCatAppUserId: String? {
+        didSet {
+            guard revenueCatAppUserId != oldValue else { return }
+            let anonymous = revenueCatAppUserId.flatMap { RevenueCatId.isAnonymous($0) ? $0 : nil }
+            #if DEBUG
+            if revenueCatAppUserId != nil, anonymous == nil {
+                chatLog.error("revenueCatAppUserId is not one of RevenueCat's anonymous ids, so it was not passed on. For a customer who has signed in, sign a token on your server and pass it to identify(userId:userToken:).")
+            }
+            #endif
+            changePurchases { $0.revenueCatId = anonymous }
+        }
+    }
+
+    var sharesAppStoreSubscriptions = false {
+        didSet {
+            guard sharesAppStoreSubscriptions != oldValue else { return }
+            if sharesAppStoreSubscriptions {
+                readAppStore()
+            } else {
+                appStoreRead?.cancel()
+                appStoreRead = nil
+                changePurchases { $0.appStore = [] }
+            }
+        }
+    }
+
+    private var appStoreRead: Task<Void, Never>?
 
     private var sessions: [String: ChatSession] = [:]
     private var bubble: BubbleController?
@@ -116,6 +149,7 @@ final class Hub {
     }
 
     @objc private func willEnterForeground() {
+        readAppStore()
         sessions.values.forEach { $0.appWillEnterForeground() }
     }
 
@@ -219,6 +253,8 @@ final class Hub {
         }
         openTries = 0
         session.refreshIfNeeded()
+        // A purchase made a moment ago is what someone opening the chat is likely to ask about.
+        readAppStore()
         let chat = ChatViewController(session: session)
         openChat = chat
         top.present(chat, animated: true)
@@ -267,8 +303,32 @@ final class Hub {
         guard next != person else { return }
         person = next
         defaults.set(true, forKey: someoneNamedKey)
+        userChanged()
+    }
+
+    /// So a reload finds who it should, and a page that hears is told now, unless a sign-out is still removing data.
+    private func userChanged() {
         sessions.values.forEach { $0.personChanged() }
         if !isForgetting { sessions.values.forEach { $0.tellPagePerson() } }
+    }
+
+    private func changePurchases(_ change: (inout Purchases) -> Void) {
+        var next = purchases
+        change(&next)
+        guard next != purchases else { return }
+        purchases = next
+        userChanged()
+    }
+
+    /// Reads the App Store's word again, while the app shares it. A newer read takes over from one still on its way.
+    private func readAppStore() {
+        guard sharesAppStoreSubscriptions else { return }
+        appStoreRead?.cancel()
+        appStoreRead = Task { [weak self] in
+            let proofs = await AppStoreSubscriptions.read()
+            guard !Task.isCancelled, let self, self.sharesAppStoreSubscriptions else { return }
+            self.changePurchases { $0.appStore = proofs }
+        }
     }
 
     func logout(completion: (() -> Void)?) {
@@ -280,21 +340,27 @@ final class Hub {
         if let completion { waitingForForgetting.append(completion) }
         guard someone else { return }
         person = nil
-        sessions.values.forEach { $0.personChanged() }
         forgetting += 1
+        // The RevenueCat id goes with the person: once they sign in, RevenueCat can join their anonymous id to them, so it would name them to the
+        // next person. The app sets the next customer's after this. The App Store's word stays, since it is about the Apple ID on the device,
+        // which signing out of the app does not change. Nothing is told until the data is removed.
+        #if DEBUG
+        if revenueCatAppUserId != nil {
+            chatLog.notice("logout forgot revenueCatAppUserId. Set the next customer's after logout, not before.")
+        }
+        #endif
+        revenueCatAppUserId = nil
+        sessions.values.forEach { $0.personChanged() }
         // Removed first, and only then is a running page told, or the removal takes the new visitor id the page has just written.
         removeSiteData { [weak self] removed in
             guard let self else { return }
             self.forgetting -= 1
             guard !self.isForgetting else { return }
             self.sessions.values.forEach { $0.signedOut() }
-            if self.person == nil {
-                // Only once WebKit has said it removed the data: otherwise the next logout removes it again.
-                if removed { self.defaults.set(false, forKey: self.someoneNamedKey) }
-            } else {
-                // Whoever signed in while that was happening.
-                self.sessions.values.forEach { $0.tellPagePerson() }
-            }
+            // Only once WebKit has said it removed the data: otherwise the next logout removes it again.
+            if self.person == nil, removed { self.defaults.set(false, forKey: self.someoneNamedKey) }
+            // Whoever signed in while that was happening, and the subscriptions the app still shows, which the page dropped with the person.
+            self.sessions.values.forEach { $0.tellPagePerson() }
             let waiting = self.waitingForForgetting
             self.waitingForForgetting = []
             waiting.forEach { $0() }

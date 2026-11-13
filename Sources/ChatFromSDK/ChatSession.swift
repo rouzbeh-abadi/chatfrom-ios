@@ -39,9 +39,9 @@ final class ChatSession: NSObject, ObservableObject {
     /// The document now in the web view has said chatfrom:ready, and not chatfrom:failed: it hears events. A load that is on its way, or that failed, leaves it running until another takes its place.
     private var hears = false
     /// Who that document was last told is using the app.
-    private var pagePerson: Person?
+    private var pageUser = AppUser()
     /// Who was in the script when the newest load began, which is who its document starts with.
-    private var loadPerson: Person?
+    private var loadUser = AppUser()
     private var latestLoad: WKNavigation?
     /// A load has begun and its document has not replaced the last one. What is heard meanwhile comes from the old document, which must not lift the cover.
     private var awaitingCommit = false
@@ -117,7 +117,7 @@ final class ChatSession: NSObject, ObservableObject {
         wanted = true
         needsReload = false
         phase = .loading
-        loadPerson = hub.person
+        loadUser = hub.user
         installScripts()
         lastOnScreen = Date()
         awaitingCommit = true
@@ -163,7 +163,7 @@ final class ChatSession: NSObject, ObservableObject {
     private func installScripts() {
         let controller = webView.configuration.userContentController
         controller.removeAllUserScripts()
-        controller.addUserScript(WKUserScript(source: BridgeScript.userScript(for: hub.person, page: pageURL), injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        controller.addUserScript(WKUserScript(source: BridgeScript.userScript(for: hub.user, page: pageURL), injectionTime: .atDocumentStart, forMainFrameOnly: true))
         // Nothing added at all at the phone's usual size.
         if hub.textScale != 1 {
             controller.addUserScript(WKUserScript(source: BridgeScript.textSize(hub.textScale), injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -177,15 +177,16 @@ final class ChatSession: NSObject, ObservableObject {
     }
 
     func tellPagePerson() {
-        guard hears, pagePerson != hub.person else { return }
-        pagePerson = hub.person
-        run(BridgeScript.setPerson(hub.person))
+        guard hears, pageUser != hub.user else { return }
+        pageUser = hub.user
+        run(BridgeScript.setUser(hub.user))
     }
 
     /// The person is gone from the stored data by now. A document that hears forgets what it holds, even one a failed load has left running under the cover. Any page not ready is loaded afresh.
     func signedOut() {
         if hears {
-            pagePerson = nil
+            // The page drops all of window.ChatFromApp on the event, so it holds nothing at all now.
+            pageUser = AppUser()
             run(BridgeScript.dispatch(.signOut))
         }
         if phase == .loading || phase == .failed { load() }
@@ -284,7 +285,7 @@ extension ChatSession: WKNavigationDelegate {
         guard navigation === latestLoad else { return }
         awaitingCommit = false
         hears = false
-        pagePerson = loadPerson
+        pageUser = loadUser
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
