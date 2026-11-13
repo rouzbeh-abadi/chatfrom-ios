@@ -38,10 +38,13 @@ final class ChatSession: NSObject, ObservableObject {
     private unowned let hub: Hub
     /// The document now in the web view has said chatfrom:ready, and not chatfrom:failed: it hears events. A load that is on its way, or that failed, leaves it running until another takes its place.
     private var hears = false
-    /// Who that document was last told is using the app.
-    private var pageUser = AppUser()
-    /// Who was in the script when the newest load began, which is who its document starts with.
+    /// Who that document was last told is using the app; nil when that cannot be known, so the next word to it says it again.
+    private var pageUser: AppUser? = AppUser()
+    /// Who was in the script when the newest load began, which is who its document starts with, unless the script changed before it began.
     private var loadUser = AppUser()
+    /// Goes up each time the script that sets window.ChatFromApp is put in again, so a load knows whether its document can have begun with another.
+    private var scriptVersion = 0
+    private var loadScriptVersion = 0
     private var latestLoad: WKNavigation?
     /// A load has begun and its document has not replaced the last one. What is heard meanwhile comes from the old document, which must not lift the cover.
     private var awaitingCommit = false
@@ -119,6 +122,7 @@ final class ChatSession: NSObject, ObservableObject {
         phase = .loading
         loadUser = hub.user
         installScripts()
+        loadScriptVersion = scriptVersion
         lastOnScreen = Date()
         awaitingCommit = true
         latestLoad = webView.load(URLRequest(url: pageURL))
@@ -161,6 +165,7 @@ final class ChatSession: NSObject, ObservableObject {
     // MARK: The person
 
     private func installScripts() {
+        scriptVersion += 1
         let controller = webView.configuration.userContentController
         controller.removeAllUserScripts()
         controller.addUserScript(WKUserScript(source: BridgeScript.userScript(for: hub.user, page: pageURL), injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -285,7 +290,8 @@ extension ChatSession: WKNavigationDelegate {
         guard navigation === latestLoad else { return }
         awaitingCommit = false
         hears = false
-        pageUser = loadUser
+        // The script went in again while the load was on its way: WebKit may have begun the document with either, so it is told again once ready.
+        pageUser = scriptVersion == loadScriptVersion ? loadUser : nil
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {

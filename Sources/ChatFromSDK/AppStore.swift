@@ -5,29 +5,44 @@ import StoreKit
 /// App Store on the device, which is not always whoever is signed in to the app.
 enum AppStoreSubscriptions {
     /// As many as ChatFrom reads on a turn, APP_STORE_MAX in the app's libs/app-subscriber.ts: a person holds one or two.
-    static let max = 5
+    static let most = 5
 
-    /// Each subscription the customer has had in this app, ended ones too, so the chat can say why one ended. Nothing it reads asks the person anything.
-    static func read() async -> [AppStoreProof] {
-        // A product's statuses cover its whole subscription group, so one product from each group the customer has had here.
-        var productOfGroup: [String: String] = [:]
+    /// Each subscription the customer has had in this app, ended ones too, so the chat can say why one ended: those that give access first,
+    /// then the latest to end. Nil when the App Store could not be read, which is not the same as none. Nothing here asks the person anything.
+    static func read() async -> [AppStoreProof]? {
+        // Statuses are kept per subscription group, and any transaction names its group, even one for a product no longer on sale.
+        var groups = Set<String>()
         for await result in Transaction.all {
             guard case .verified(let transaction) = result, transaction.productType == .autoRenewable, let group = transaction.subscriptionGroupID else { continue }
-            if productOfGroup[group] == nil { productOfGroup[group] = transaction.productID }
+            groups.insert(group)
         }
-        guard !productOfGroup.isEmpty else { return [] }
-        let products: [Product]
+        var statuses: [Product.SubscriptionInfo.Status] = []
         do {
-            products = try await Product.products(for: Set(productOfGroup.values))
+            for group in groups.sorted() {
+                statuses += try await Product.SubscriptionInfo.status(for: group)
+            }
         } catch {
             chatLog.notice("The App Store's subscriptions could not be read: \(error.localizedDescription, privacy: .public)")
-            return []
+            return nil
         }
-        var proofs: [AppStoreProof] = []
-        for product in products {
-            guard let statuses = try? await product.subscription?.status else { continue }
-            proofs += statuses.map { AppStoreProof(transaction: $0.transaction.jwsRepresentation, renewal: $0.renewalInfo.jwsRepresentation) }
+        return statuses.sorted(by: comesFirst).prefix(most).map { AppStoreProof(transaction: $0.transaction.jwsRepresentation, renewal: $0.renewalInfo.jwsRepresentation) }
+    }
+
+    private static func comesFirst(_ a: Product.SubscriptionInfo.Status, _ b: Product.SubscriptionInfo.Status) -> Bool {
+        let (first, second) = (rank(a.state), rank(b.state))
+        if first != second { return first < second }
+        return (a.transaction.unsafePayloadValue.expirationDate ?? .distantPast) > (b.transaction.unsafePayloadValue.expirationDate ?? .distantPast)
+    }
+
+    /// Those that give access, then a payment being tried again, then those that are over.
+    private static func rank(_ state: Product.SubscriptionInfo.RenewalState) -> Int {
+        switch state {
+        case .subscribed: return 0
+        case .inGracePeriod: return 1
+        case .inBillingRetryPeriod: return 2
+        case .expired: return 3
+        case .revoked: return 4
+        default: return 5
         }
-        return Array(proofs.prefix(max))
     }
 }

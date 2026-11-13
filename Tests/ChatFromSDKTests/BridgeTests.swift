@@ -128,6 +128,18 @@ final class BridgeScriptTests: XCTestCase {
         }
     }
 
+    func testATokenCannotBreakOutOfARunningPageEither() throws {
+        for hostile in ["\"; window.ran = true; //", "</script><script>window.ran = true</script>", "\u{2028}window.ran = true"] {
+            let user = AppUser(person: Person(userKey: "k", userToken: hostile), purchases: Purchases(revenueCatId: hostile, appStore: [AppStoreProof(transaction: hostile, renewal: hostile)]))
+            let window = try run(BridgeScript.setUser(user))
+            let app = window.objectForKeyedSubscript("ChatFromApp")
+            XCTAssertEqual(app?.objectForKeyedSubscript("userToken").toString(), hostile)
+            XCTAssertEqual(app?.objectForKeyedSubscript("revenueCatId").toString(), hostile)
+            XCTAssertEqual(app?.objectForKeyedSubscript("appStore").atIndex(0).objectForKeyedSubscript("renewal").toString(), hostile)
+            XCTAssertEqual(window.objectForKeyedSubscript("ran")?.isUndefined, true, hostile)
+        }
+    }
+
     func testEvents() throws {
         let context = try XCTUnwrap(JSContext())
         context.evaluateScript("var events = []; var window = { dispatchEvent: function (e) { events.push(e.type); } }; function Event(type) { this.type = type; }")
@@ -322,14 +334,26 @@ final class ChatIconTests: XCTestCase {
 @MainActor
 final class PurchasesTests: XCTestCase {
     private let anonymous = "$RCAnonymousID:" + String(repeating: "0123abcd", count: 4)
+    private let proof = AppStoreProof(transaction: "t1", renewal: "r1")
+    private var hub: Hub { Hub.shared }
 
     override func tearDown() async throws {
-        Hub.shared.revenueCatAppUserId = nil
-        Hub.shared.sharesAppStoreSubscriptions = false
+        hub.sharesAppStoreSubscriptions = false
+        hub.readAppStoreSubscriptions = { await AppStoreSubscriptions.read() }
+        let forgotten = expectation(description: "forgotten")
+        hub.logout { forgotten.fulfill() }
+        await fulfillment(of: [forgotten], timeout: 10)
+    }
+
+    /// Waits for something the hub does on its own time, such as a read of the App Store.
+    private func eventually(_ what: String, _ holds: @escaping () -> Bool) async {
+        for _ in 0..<200 where !holds() {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(holds(), what)
     }
 
     func testOnlyAnAnonymousRevenueCatIdReachesAPage() {
-        let hub = Hub.shared
         hub.revenueCatAppUserId = "user-42"
         XCTAssertEqual(hub.revenueCatAppUserId, "user-42", "the app's own value, as it set it")
         XCTAssertNil(hub.user.purchases.revenueCatId)
@@ -340,7 +364,6 @@ final class PurchasesTests: XCTestCase {
     }
 
     func testASignOutForgetsTheRevenueCatIdAtOnceAndANewOneSetAfterItStays() async {
-        let hub = Hub.shared
         hub.identify(userId: "sara@example.com", userToken: nil)
         hub.revenueCatAppUserId = anonymous
         let forgotten = expectation(description: "forgotten")
@@ -354,21 +377,69 @@ final class PurchasesTests: XCTestCase {
         XCTAssertEqual(hub.user.purchases.revenueCatId, next)
     }
 
-    func testWithNobodyToForgetTheAnonymousIdStays() {
-        let hub = Hub.shared
-        XCTAssertNil(hub.person)
+    func testEverySignOutForgetsTheRevenueCatIdEvenWithNobodyToForget() async {
+        let first = expectation(description: "nobody left")
+        hub.logout { first.fulfill() }
+        await fulfillment(of: [first], timeout: 10)
         hub.revenueCatAppUserId = anonymous
-        // Nobody was named on this simulator since the last sign-out finished, so there is nothing to forget.
-        if !UserDefaults(suiteName: "io.chatfrom.sdk")!.bool(forKey: "someone-named") {
-            hub.logout(completion: nil)
-            XCTAssertEqual(hub.user.purchases.revenueCatId, anonymous)
-        }
+        let again = expectation(description: "nothing to forget")
+        hub.logout { again.fulfill() }
+        await fulfillment(of: [again], timeout: 10)
+        XCTAssertNil(hub.revenueCatAppUserId)
+        XCTAssertNil(hub.user.purchases.revenueCatId)
     }
 
-    func testTurningTheAppStoreOffDropsWhatItRead() {
-        let hub = Hub.shared
+    func testSomeoneElseSigningInStartsWithoutTheLastOnesRevenueCatId() {
+        hub.identify(userId: "sara@example.com", userToken: nil)
+        hub.revenueCatAppUserId = anonymous
+        hub.identify(userId: "sara@example.com", userToken: "a-newer-token")
+        XCTAssertEqual(hub.user.purchases.revenueCatId, anonymous, "the same person with a new token keeps it")
+        hub.identify(userId: "tom@example.com", userToken: nil)
+        XCTAssertNil(hub.revenueCatAppUserId)
+        XCTAssertNil(hub.user.purchases.revenueCatId)
+    }
+
+    func testTheAppStoresWordIsReadWhenSharingTurnsOnAndGoesWhenItTurnsOff() async {
+        hub.readAppStoreSubscriptions = { [self] in [proof] }
         hub.sharesAppStoreSubscriptions = true
+        await eventually("read once sharing is on") { self.hub.user.purchases.appStore == [self.proof] }
         hub.sharesAppStoreSubscriptions = false
         XCTAssertEqual(hub.user.purchases.appStore, [])
+    }
+
+    func testAReadThatFailedKeepsWhatWasReadBefore() async {
+        var reads = 0
+        hub.readAppStoreSubscriptions = { [self] in
+            reads += 1
+            return reads == 1 ? [proof] : nil
+        }
+        hub.sharesAppStoreSubscriptions = true
+        await eventually("the first read") { self.hub.user.purchases.appStore == [self.proof] }
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        await eventually("a second read at the foreground") { reads == 2 }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(hub.user.purchases.appStore, [proof])
+    }
+
+    func testAReadStillOnItsWayWhenSharingTurnsOffChangesNothing() async {
+        hub.readAppStoreSubscriptions = { [self] in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            return [proof]
+        }
+        hub.sharesAppStoreSubscriptions = true
+        hub.sharesAppStoreSubscriptions = false
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertEqual(hub.user.purchases.appStore, [])
+    }
+
+    func testTheAppStoresWordOutlastsASignOut() async {
+        hub.readAppStoreSubscriptions = { [self] in [proof] }
+        hub.sharesAppStoreSubscriptions = true
+        await eventually("read once sharing is on") { self.hub.user.purchases.appStore == [self.proof] }
+        hub.identify(userId: "sara@example.com", userToken: nil)
+        let forgotten = expectation(description: "forgotten")
+        hub.logout { forgotten.fulfill() }
+        await fulfillment(of: [forgotten], timeout: 10)
+        XCTAssertEqual(hub.user.purchases.appStore, [proof])
     }
 }

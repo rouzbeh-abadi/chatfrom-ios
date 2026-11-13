@@ -19,7 +19,7 @@ final class ChatFromUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launch(bot: String = "live-bot", bubble: Bool = true, base: String? = nil, maxAge: Int? = nil, gate: Bool = false, arguments: [String] = []) {
+    private func launch(bot: String = "live-bot", bubble: Bool = true, base: String? = nil, maxAge: Int? = nil, gate: Bool = false, fakeAppStore: Bool = false, arguments: [String] = []) {
         app = XCUIApplication()
         app.launchArguments += arguments
         app.launchEnvironment["CHATFROM_BASE_URL"] = base ?? server
@@ -27,6 +27,7 @@ final class ChatFromUITests: XCTestCase {
         if !bubble { app.launchEnvironment["CHATFROM_NO_BUBBLE"] = "1" }
         if let maxAge { app.launchEnvironment["CHATFROM_MAX_AGE"] = String(maxAge) }
         if gate { app.launchEnvironment["CHATFROM_GATE"] = "1" }
+        if fakeAppStore { app.launchEnvironment["CHATFROM_FAKE_APP_STORE"] = "1" }
         app.launch()
     }
 
@@ -116,13 +117,21 @@ final class ChatFromUITests: XCTestCase {
         XCTAssertTrue(closeButton.waitForNonExistence(timeout: 5))
     }
 
-    /// Taps a button under Account that can be below the screen, since a form holds only the rows it shows, then goes back up to the row.
+    /// Taps a button or switch under Account that can be below the screen, since a form holds only the rows it shows, then goes back up to the row.
     private func tapLower(_ title: String, file: StaticString = #filePath, line: UInt = #line) {
         let button = app.buttons[title]
-        for _ in 0..<4 where !(button.exists && button.isHittable) { app.swipeUp() }
-        XCTAssertTrue(button.isHittable, "no \(title) button", file: file, line: line)
-        button.tap()
-        for _ in 0..<4 where !(app.buttons["chatfrom.row"].exists && app.buttons["chatfrom.row"].isHittable) { app.swipeDown() }
+        let toggle = app.switches[title]
+        for _ in 0..<4 where !(button.exists && button.isHittable) && !(toggle.exists && toggle.isHittable) { app.swipeUp() }
+        if toggle.exists && toggle.isHittable {
+            // On the switch itself, not the words beside it.
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        } else {
+            XCTAssertTrue(button.isHittable, "no \(title) button", file: file, line: line)
+            button.tap()
+        }
+        let row = app.buttons["chatfrom.row"].firstMatch
+        for _ in 0..<8 where !(row.exists && row.isHittable) { app.swipeDown() }
+        XCTAssertTrue(row.exists, "the row is not on screen after scrolling back: \(app.debugDescription)", file: file, line: line)
     }
 
     /// Whoever an earlier test left signed in goes first, so a sign-out here starts from nobody.
@@ -436,6 +445,26 @@ final class ChatFromUITests: XCTestCase {
         openFromRow()
         web.buttons["Show the purchases"].tap()
         XCTAssertTrue(lines("purchases now rc=$RCAnonymousID:0123abcd").firstMatch.waitForExistence(timeout: 8), "\(web.staticTexts.allElementsBoundByIndex.map(\.label))")
+    }
+
+    func testTheAppStoresWordReachesThePageAndIsToldAgainAfterASignOut() {
+        // Without the bubble, which sits over the switch at the foot of the form.
+        launch(bubble: false, fakeAppStore: true)
+        goToAccount()
+        signOutWhoeverIsLeft()
+        tapLower("Share App Store subscriptions")
+        openFromRow()
+        expectLog("purchases rc=none store=1")
+        close()
+
+        app.buttons["Sign in as Sara"].tap()
+        app.buttons["Sign out"].tap()
+        XCTAssertTrue(app.staticTexts["Signed out 2 times"].waitForExistence(timeout: 8))
+        openFromRow()
+        expectLog("heard sign-out")
+        // The page dropped everything with the person; what the App Store says is about the device, so it comes back.
+        web.buttons["Show the purchases"].tap()
+        XCTAssertTrue(lines("purchases now rc=none store=1").firstMatch.waitForExistence(timeout: 8), "\(web.staticTexts.allElementsBoundByIndex.map(\.label))")
     }
 
     func testASignOutReachesAPageAFailedReloadLeftRunning() throws {

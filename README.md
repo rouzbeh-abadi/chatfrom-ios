@@ -108,15 +108,15 @@ With **RevenueCat** connected to the chatbot under Tools, a customer can ask abo
 ChatFrom.identify(userId: user.id, userToken: userToken)
 
 // RevenueCat's anonymous id, for a customer who has not signed in, if the chatbot's owner allowed anonymous ids.
-ChatFrom.revenueCatAppUserId = Purchases.shared.appUserID
+ChatFrom.revenueCatAppUserId = Purchases.shared.isAnonymous ? Purchases.shared.appUserID : nil
 
 // The App Store's own word on the subscriptions, if the owner entered your bundle id. Off unless you turn it on.
 ChatFrom.sharesAppStoreSubscriptions = true
 ```
 
 - **A token from your server** names the customer's RevenueCat app user id in `sub`, signed HS256 with the signing secret the RevenueCat card showed, with an `exp` at most 24 hours away. Sign it on your server, never in the app, and pass it as `userToken`. It also reaches the tool servers marked for the user token.
-- **`revenueCatAppUserId`** is passed on only when it is one of RevenueCat's anonymous ids (`$RCAnonymousID:` and 32 hex digits), which nobody can guess. An id you chose could be anyone's, so for a signed-in customer use a token; a debug build says so in the Console. Set it again whenever RevenueCat's id changes. `logout()` forgets it, so set the next customer's after that.
-- **`sharesAppStoreSubscriptions`** reads the app's subscriptions with StoreKit 2, asking the person nothing, and passes on what Apple signed, which ChatFrom checks with Apple's own certificate. It reads them again when the app comes to the front and when the chat opens. They are about whoever is signed in to the App Store on the device, which signing out of your app does not change, so `logout()` leaves them. Purchases made with Xcode's StoreKit testing are signed by Xcode, not Apple, so ChatFrom does not take them: try it with a sandbox account.
+- **`revenueCatAppUserId`** is passed on only when it is one of RevenueCat's anonymous ids (`$RCAnonymousID:` and 32 hex digits), which nobody can guess. An id you chose could be anyone's, so for a signed-in customer use a token; a debug build says so in the Console. Set it again whenever RevenueCat's id changes. It goes with the person: every `logout()` forgets it, and so does `identify` for someone else, since RevenueCat can join an anonymous id to whoever signs in. Set the next customer's after those calls.
+- **`sharesAppStoreSubscriptions`** reads the app's subscriptions with StoreKit 2, asking the person nothing, and passes on what Apple signed, which ChatFrom checks with Apple's own certificate. It reads them again when the app comes to the front and whenever the App Store says one changed, and only on a device that can show the chat. The chat sends them only to a chatbot with the RevenueCat tool on. They are about whoever is signed in to the App Store on the device, which signing out of your app does not change, so `logout()` leaves them. Purchases made with Xcode's StoreKit testing are signed by Xcode, not Apple, so ChatFrom does not take them: try it with a sandbox account.
 
 The [RevenueCat guide on chatfrom.io](https://chatfrom.io/docs/connections/revenuecat) has the owner's side.
 

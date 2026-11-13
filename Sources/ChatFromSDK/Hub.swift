@@ -1,4 +1,5 @@
 import Network
+import StoreKit
 import UIKit
 import WebKit
 
@@ -25,13 +26,18 @@ final class Hub {
     /// A sign-out is removing stored data, and nothing is told anything until that has finished.
     var isForgetting: Bool { forgetting > 0 }
 
-    /// RevenueCat's id for the customer, as the app set it. Only an anonymous one reaches a page.
+    /// RevenueCat's id for the customer, as the app set it.
+    private var revenueCatIdSet: String?
+
+    /// As the app set it. Only an anonymous one reaches a page.
     var revenueCatAppUserId: String? {
-        didSet {
-            guard revenueCatAppUserId != oldValue else { return }
-            let anonymous = revenueCatAppUserId.flatMap { RevenueCatId.isAnonymous($0) ? $0 : nil }
+        get { revenueCatIdSet }
+        set {
+            guard newValue != revenueCatIdSet else { return }
+            revenueCatIdSet = newValue
+            let anonymous = newValue.flatMap { RevenueCatId.isAnonymous($0) ? $0 : nil }
             #if DEBUG
-            if revenueCatAppUserId != nil, anonymous == nil {
+            if newValue != nil, anonymous == nil {
                 chatLog.error("revenueCatAppUserId is not one of RevenueCat's anonymous ids, so it was not passed on. For a customer who has signed in, sign a token on your server and pass it to identify(userId:userToken:).")
             }
             #endif
@@ -44,15 +50,21 @@ final class Hub {
             guard sharesAppStoreSubscriptions != oldValue else { return }
             if sharesAppStoreSubscriptions {
                 readAppStore()
+                watchAppStore()
             } else {
                 appStoreRead?.cancel()
                 appStoreRead = nil
+                appStoreWatch?.cancel()
+                appStoreWatch = nil
                 changePurchases { $0.appStore = [] }
             }
         }
     }
 
+    /// How the App Store's word is read: StoreKit's, or a stand-in in this package's tests, which have no purchase Apple signed.
+    var readAppStoreSubscriptions: () async -> [AppStoreProof]? = { await AppStoreSubscriptions.read() }
     private var appStoreRead: Task<Void, Never>?
+    private var appStoreWatch: Task<Void, Never>?
 
     private var sessions: [String: ChatSession] = [:]
     private var bubble: BubbleController?
@@ -253,8 +265,6 @@ final class Hub {
         }
         openTries = 0
         session.refreshIfNeeded()
-        // A purchase made a moment ago is what someone opening the chat is likely to ask about.
-        readAppStore()
         let chat = ChatViewController(session: session)
         openChat = chat
         top.present(chat, animated: true)
@@ -301,6 +311,8 @@ final class Hub {
         #endif
         let next = Person(userKey: PersonKey.make(userId: userId, salt: PersonKey.salt(in: defaults)), userToken: userToken)
         guard next != person else { return }
+        // The RevenueCat id was the last person's: someone else, even without a sign-out between them, starts without it.
+        if let last = person, last.userKey != next.userKey { dropRevenueCatId() }
         person = next
         defaults.set(true, forKey: someoneNamedKey)
         userChanged()
@@ -320,36 +332,64 @@ final class Hub {
         userChanged()
     }
 
-    /// Reads the App Store's word again, while the app shares it. A newer read takes over from one still on its way.
+    /// The RevenueCat id gone with the person it was for, without a word to the pages: the caller tells them.
+    private func dropRevenueCatId() {
+        revenueCatIdSet = nil
+        purchases.revenueCatId = nil
+    }
+
+    /// Reads the App Store's word again, while the app shares it and the chat can be shown. A newer read takes over from one still on its way,
+    /// and one that failed keeps what was read before.
     private func readAppStore() {
-        guard sharesAppStoreSubscriptions else { return }
+        guard sharesAppStoreSubscriptions, Hub.isSupported else { return }
         appStoreRead?.cancel()
+        let read = readAppStoreSubscriptions
         appStoreRead = Task { [weak self] in
-            let proofs = await AppStoreSubscriptions.read()
-            guard !Task.isCancelled, let self, self.sharesAppStoreSubscriptions else { return }
+            let proofs = await read()
+            guard !Task.isCancelled, let self, self.sharesAppStoreSubscriptions, let proofs else { return }
             self.changePurchases { $0.appStore = proofs }
         }
     }
 
+    /// Reads again whenever the App Store says a subscription changed: bought, renewed, cancelled or refunded, while the app runs.
+    /// It reads statuses only, so the app's own handling of its transactions is untouched.
+    private func watchAppStore() {
+        guard Hub.isSupported, appStoreWatch == nil else { return }
+        appStoreWatch = Task { [weak self] in
+            for await _ in Product.SubscriptionInfo.Status.updates {
+                // StoreKit's sequence may not end at a cancel, so the next change is where a watch that was stopped ends.
+                guard !Task.isCancelled else { return }
+                self?.readAppStore()
+            }
+        }
+    }
+
     func logout(completion: (() -> Void)?) {
+        // The RevenueCat id goes at every call, with someone to forget or not: once a customer signs in, RevenueCat can join their anonymous id
+        // to them, so it would name them to the next person. The app sets the next customer's after this. The App Store's word stays, since it
+        // is about the Apple ID on the device, which signing out of the app does not change.
+        let droppedId = revenueCatIdSet != nil
+        if droppedId {
+            #if DEBUG
+            chatLog.notice("logout forgot revenueCatAppUserId, as it does each time. Set the next customer's after it.")
+            #endif
+            dropRevenueCatId()
+        }
         let someone = person != nil || defaults.bool(forKey: someoneNamedKey)
         guard someone || isForgetting else {
+            if droppedId { userChanged() }
             completion?()
             return
         }
         if let completion { waitingForForgetting.append(completion) }
-        guard someone else { return }
+        guard someone else {
+            // A sign-out is still removing data; the pages hear once it has finished.
+            if droppedId { sessions.values.forEach { $0.personChanged() } }
+            return
+        }
         person = nil
         forgetting += 1
-        // The RevenueCat id goes with the person: once they sign in, RevenueCat can join their anonymous id to them, so it would name them to the
-        // next person. The app sets the next customer's after this. The App Store's word stays, since it is about the Apple ID on the device,
-        // which signing out of the app does not change. Nothing is told until the data is removed.
-        #if DEBUG
-        if revenueCatAppUserId != nil {
-            chatLog.notice("logout forgot revenueCatAppUserId. Set the next customer's after logout, not before.")
-        }
-        #endif
-        revenueCatAppUserId = nil
+        // Nothing is told until the data is removed.
         sessions.values.forEach { $0.personChanged() }
         // Removed first, and only then is a running page told, or the removal takes the new visitor id the page has just written.
         removeSiteData { [weak self] removed in
