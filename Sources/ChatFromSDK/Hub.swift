@@ -353,7 +353,6 @@ final class Hub {
         }
     }
 
-
     func logout(completion: (() -> Void)?) {
         // The RevenueCat id goes at every call, with someone to forget or not: once a customer signs in, RevenueCat can join their anonymous id
         // to them, so it would name them to the next person. The app sets the next customer's after this, and one it set after a sign-out still
