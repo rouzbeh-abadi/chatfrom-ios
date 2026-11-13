@@ -1,5 +1,4 @@
 import Network
-import StoreKit
 import UIKit
 import WebKit
 
@@ -54,12 +53,9 @@ final class Hub {
             guard sharesAppStoreSubscriptions != oldValue else { return }
             if sharesAppStoreSubscriptions {
                 readAppStore()
-                watchAppStore()
             } else {
                 appStoreRead?.cancel()
                 appStoreRead = nil
-                appStoreWatch?.cancel()
-                appStoreWatch = nil
                 changePurchases { $0.appStore = [] }
             }
         }
@@ -68,7 +64,6 @@ final class Hub {
     /// How the App Store's word is read: StoreKit's, or a stand-in in this package's tests, which have no purchase Apple signed.
     var readAppStoreSubscriptions: () async -> [AppStoreProof]? = { await AppStoreSubscriptions.read() }
     private var appStoreRead: Task<Void, Never>?
-    private var appStoreWatch: Task<Void, Never>?
 
     private var sessions: [String: ChatSession] = [:]
     private var bubble: BubbleController?
@@ -269,6 +264,9 @@ final class Hub {
         }
         openTries = 0
         session.refreshIfNeeded()
+        // A purchase made a moment ago is what someone opening the chat is likely to ask about. StoreKit's update streams are left to the
+        // app: Apple does not say each listener gets every update, and the SDK must never take one from the app's own.
+        readAppStore()
         let chat = ChatViewController(session: session)
         openChat = chat
         top.present(chat, animated: true)
@@ -355,18 +353,6 @@ final class Hub {
         }
     }
 
-    /// Reads again whenever the App Store says a subscription changed: bought, renewed, cancelled or refunded, while the app runs.
-    /// It reads statuses only, so the app's own handling of its transactions is untouched.
-    private func watchAppStore() {
-        guard Hub.isSupported, appStoreWatch == nil else { return }
-        appStoreWatch = Task { [weak self] in
-            for await _ in Product.SubscriptionInfo.Status.updates {
-                // StoreKit's sequence may not end at a cancel, so the next change is where a watch that was stopped ends.
-                guard !Task.isCancelled else { return }
-                self?.readAppStore()
-            }
-        }
-    }
 
     func logout(completion: (() -> Void)?) {
         // The RevenueCat id goes at every call, with someone to forget or not: once a customer signs in, RevenueCat can join their anonymous id
@@ -389,8 +375,9 @@ final class Hub {
             return
         }
         person = nil
+        // Calls while one sign-out is still removing data are part of it, so an id set after the first holds through all of them.
+        if !isForgetting { signOuts += 1 }
         forgetting += 1
-        signOuts += 1
         // Nothing is told until the data is removed.
         sessions.values.forEach { $0.personChanged() }
         // Removed first, and only then is a running page told, or the removal takes the new visitor id the page has just written.

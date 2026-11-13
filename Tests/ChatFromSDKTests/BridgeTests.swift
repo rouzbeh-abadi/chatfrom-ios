@@ -385,10 +385,12 @@ final class PurchasesTests: XCTestCase {
         hub.logout { first.fulfill() }
         let next = "$RCAnonymousID:" + String(repeating: "fedc9876", count: 4)
         hub.revenueCatAppUserId = next
-        // Another part of the app that reacts to the same sign-out.
+        // Other parts of the app that react to the same sign-out.
         hub.logout { second.fulfill() }
+        let third = expectation(description: "the third call")
+        hub.logout { third.fulfill() }
         XCTAssertEqual(hub.user.purchases.revenueCatId, next)
-        await fulfillment(of: [first, second], timeout: 10)
+        await fulfillment(of: [first, second, third], timeout: 10)
         XCTAssertEqual(hub.user.purchases.revenueCatId, next)
     }
 
@@ -445,6 +447,26 @@ final class PurchasesTests: XCTestCase {
         hub.sharesAppStoreSubscriptions = false
         try? await Task.sleep(nanoseconds: 400_000_000)
         XCTAssertEqual(hub.user.purchases.appStore, [])
+    }
+
+    func testANewerReadTakesOverFromASlowOneStillOnItsWay() async {
+        let newer = AppStoreProof(transaction: "t2", renewal: nil)
+        var reads = 0
+        hub.readAppStoreSubscriptions = { [self] in
+            reads += 1
+            if reads == 1 {
+                // Slow, and cut short when the newer read takes over.
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                return [proof]
+            }
+            return [newer]
+        }
+        hub.sharesAppStoreSubscriptions = true
+        await eventually("the first read under way") { reads == 1 }
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        await eventually("the newer read") { self.hub.user.purchases.appStore == [newer] }
+        try? await Task.sleep(nanoseconds: 450_000_000)
+        XCTAssertEqual(hub.user.purchases.appStore, [newer], "the slow read wrote over the newer one")
     }
 
     func testTheAppStoresWordOutlastsASignOut() async {

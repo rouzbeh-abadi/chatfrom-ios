@@ -121,7 +121,8 @@ public enum ChatFrom {
     ///
     /// The SDK reads the subscriptions with StoreKit 2, asking the person nothing, and passes on what Apple signed, which ChatFrom checks
     /// with Apple's own certificate. So the chat can say when a subscription renews or ends, even while RevenueCat cannot be reached. It reads
-    /// them again when the app comes to the front and whenever the App Store says one changed, and only on a device that can show the chat.
+    /// them again when the app comes to the front and when the chat opens, and only on a device that can show the chat. It does not listen to
+    /// StoreKit's update streams, which are your app's.
     /// The page sends them only to a chatbot with the RevenueCat tool on. They belong to whoever is signed in to the App Store on the device,
     /// which signing out of your app does not change, so ``logout(completion:)`` leaves them.
     public static var sharesAppStoreSubscriptions: Bool {
