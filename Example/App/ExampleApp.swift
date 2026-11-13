@@ -69,6 +69,7 @@ struct AccountScreen: View {
     @State private var signedIn = "Nobody"
     @State private var bubble = launchSettings["CHATFROM_NO_BUBBLE"] == nil
     @State private var signedOutCount = 0
+    @State private var sharesAppStore = false
 
     var body: some View {
         Form {
@@ -121,6 +122,20 @@ struct AccountScreen: View {
                         UIApplication.shared.requestSceneSessionActivation(nil, userActivity: nil, options: nil)
                     }
                 }
+            }
+            // Last, so the rows the other tests tap stay where they were.
+            // For a chatbot with the RevenueCat tool: in an app of your own, the id is Purchases.shared.appUserID.
+            Section("Subscriptions") {
+                Button("Use an anonymous RevenueCat id") {
+                    ChatFrom.revenueCatAppUserId = "$RCAnonymousID:" + String(repeating: "0123abcd", count: 4)
+                }
+                Button("Use a RevenueCat id of the app's own") {
+                    ChatFrom.revenueCatAppUserId = "user-42"
+                }
+                Toggle("Share App Store subscriptions", isOn: $sharesAppStore)
+                    .onChange(of: sharesAppStore) { on in
+                        ChatFrom.sharesAppStoreSubscriptions = on
+                    }
             }
         }
         .navigationTitle("Account")

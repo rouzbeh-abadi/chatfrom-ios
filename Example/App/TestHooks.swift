@@ -12,5 +12,9 @@ enum TestHooks {
         if let age = settings["CHATFROM_MAX_AGE"].flatMap(TimeInterval.init) {
             ChatFrom.setPageMaxAge(age)
         }
+        // Apple's signed word, stood in for: only a purchase Apple signed holds at ChatFrom, and a simulator has none.
+        if settings["CHATFROM_FAKE_APP_STORE"] != nil {
+            ChatFrom.setAppStoreReader { [(transaction: "jws-from-the-test", renewal: "jws-renewal-from-the-test")] }
+        }
     }
 }

@@ -18,8 +18,52 @@ final class Hub {
     var pageMaxAge = Freshness.maxAway
     var strings = ChatFromStrings()
     private(set) var person: Person?
+    /// What the app shows of its customer's subscriptions, as pages get it.
+    private(set) var purchases = Purchases()
+    /// Everything a page is told of whoever is using the app.
+    var user: AppUser { AppUser(person: person, purchases: purchases) }
     /// A sign-out is removing stored data, and nothing is told anything until that has finished.
     var isForgetting: Bool { forgetting > 0 }
+
+    /// RevenueCat's id for the customer, as the app set it.
+    private var revenueCatIdSet: String?
+    /// Sign-outs begun in this run, and how many had begun when the id was set: one set after a sign-out began is the next customer's.
+    private var signOuts = 0
+    private var revenueCatIdSince = 0
+
+    /// As the app set it. Only an anonymous one reaches a page.
+    var revenueCatAppUserId: String? {
+        get { revenueCatIdSet }
+        set {
+            guard newValue != revenueCatIdSet else { return }
+            revenueCatIdSet = newValue
+            revenueCatIdSince = signOuts
+            let anonymous = newValue.flatMap { RevenueCatId.isAnonymous($0) ? $0 : nil }
+            #if DEBUG
+            if newValue != nil, anonymous == nil {
+                chatLog.error("revenueCatAppUserId is not one of RevenueCat's anonymous ids, so it was not passed on. For a customer who has signed in, sign a token on your server and pass it to identify(userId:userToken:).")
+            }
+            #endif
+            changePurchases { $0.revenueCatId = anonymous }
+        }
+    }
+
+    var sharesAppStoreSubscriptions = false {
+        didSet {
+            guard sharesAppStoreSubscriptions != oldValue else { return }
+            if sharesAppStoreSubscriptions {
+                readAppStore()
+            } else {
+                appStoreRead?.cancel()
+                appStoreRead = nil
+                changePurchases { $0.appStore = [] }
+            }
+        }
+    }
+
+    /// How the App Store's word is read: StoreKit's, or a stand-in in this package's tests, which have no purchase Apple signed.
+    var readAppStoreSubscriptions: () async -> [AppStoreProof]? = { await AppStoreSubscriptions.read() }
+    private var appStoreRead: Task<Void, Never>?
 
     private var sessions: [String: ChatSession] = [:]
     private var bubble: BubbleController?
@@ -116,6 +160,7 @@ final class Hub {
     }
 
     @objc private func willEnterForeground() {
+        readAppStore()
         sessions.values.forEach { $0.appWillEnterForeground() }
     }
 
@@ -219,6 +264,9 @@ final class Hub {
         }
         openTries = 0
         session.refreshIfNeeded()
+        // A purchase made a moment ago is what someone opening the chat is likely to ask about. StoreKit's update streams are left to the
+        // app: Apple does not say each listener gets every update, and the SDK must never take one from the app's own.
+        readAppStore()
         let chat = ChatViewController(session: session)
         openChat = chat
         top.present(chat, animated: true)
@@ -265,36 +313,82 @@ final class Hub {
         #endif
         let next = Person(userKey: PersonKey.make(userId: userId, salt: PersonKey.salt(in: defaults)), userToken: userToken)
         guard next != person else { return }
+        // The RevenueCat id was the last person's: someone else, even without a sign-out between them, starts without it.
+        if let last = person, last.userKey != next.userKey { dropRevenueCatId() }
         person = next
         defaults.set(true, forKey: someoneNamedKey)
+        userChanged()
+    }
+
+    /// So a reload finds who it should, and a page that hears is told now, unless a sign-out is still removing data.
+    private func userChanged() {
         sessions.values.forEach { $0.personChanged() }
         if !isForgetting { sessions.values.forEach { $0.tellPagePerson() } }
     }
 
+    private func changePurchases(_ change: (inout Purchases) -> Void) {
+        var next = purchases
+        change(&next)
+        guard next != purchases else { return }
+        purchases = next
+        userChanged()
+    }
+
+    /// The RevenueCat id gone with the person it was for, without a word to the pages: the caller tells them.
+    private func dropRevenueCatId() {
+        revenueCatIdSet = nil
+        purchases.revenueCatId = nil
+    }
+
+    /// Reads the App Store's word again, while the app shares it and the chat can be shown. A newer read takes over from one still on its way,
+    /// and one that failed keeps what was read before.
+    private func readAppStore() {
+        guard sharesAppStoreSubscriptions, Hub.isSupported else { return }
+        appStoreRead?.cancel()
+        let read = readAppStoreSubscriptions
+        appStoreRead = Task { [weak self] in
+            let proofs = await read()
+            guard !Task.isCancelled, let self, self.sharesAppStoreSubscriptions, let proofs else { return }
+            self.changePurchases { $0.appStore = proofs }
+        }
+    }
+
     func logout(completion: (() -> Void)?) {
+        // The RevenueCat id goes at every call, with someone to forget or not: once a customer signs in, RevenueCat can join their anonymous id
+        // to them, so it would name them to the next person. The app sets the next customer's after this, and one it set after a sign-out still
+        // under way began, with nobody named since, is that next customer's: a second call for the same sign-out leaves it. The App Store's
+        // word stays, since it is about the Apple ID on the device, which signing out of the app does not change.
+        let forTheNext = isForgetting && person == nil && revenueCatIdSince == signOuts
+        let droppedId = revenueCatIdSet != nil && !forTheNext
+        if droppedId { dropRevenueCatId() }
         let someone = person != nil || defaults.bool(forKey: someoneNamedKey)
         guard someone || isForgetting else {
+            if droppedId { userChanged() }
             completion?()
             return
         }
         if let completion { waitingForForgetting.append(completion) }
-        guard someone else { return }
+        guard someone else {
+            // A sign-out is still removing data; the pages hear once it has finished.
+            if droppedId { sessions.values.forEach { $0.personChanged() } }
+            return
+        }
         person = nil
-        sessions.values.forEach { $0.personChanged() }
+        // Calls while one sign-out is still removing data are part of it, so an id set after the first holds through all of them.
+        if !isForgetting { signOuts += 1 }
         forgetting += 1
+        // Nothing is told until the data is removed.
+        sessions.values.forEach { $0.personChanged() }
         // Removed first, and only then is a running page told, or the removal takes the new visitor id the page has just written.
         removeSiteData { [weak self] removed in
             guard let self else { return }
             self.forgetting -= 1
             guard !self.isForgetting else { return }
             self.sessions.values.forEach { $0.signedOut() }
-            if self.person == nil {
-                // Only once WebKit has said it removed the data: otherwise the next logout removes it again.
-                if removed { self.defaults.set(false, forKey: self.someoneNamedKey) }
-            } else {
-                // Whoever signed in while that was happening.
-                self.sessions.values.forEach { $0.tellPagePerson() }
-            }
+            // Only once WebKit has said it removed the data: otherwise the next logout removes it again.
+            if self.person == nil, removed { self.defaults.set(false, forKey: self.someoneNamedKey) }
+            // Whoever signed in while that was happening, and the subscriptions the app still shows, which the page dropped with the person.
+            self.sessions.values.forEach { $0.tellPagePerson() }
             let waiting = self.waitingForForgetting
             self.waitingForForgetting = []
             waiting.forEach { $0() }

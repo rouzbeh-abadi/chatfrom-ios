@@ -10,7 +10,7 @@ import UIKit
 /// The chat needs iOS 16.4. On older versions the package still links: there is no bubble, and rows are grey.
 @MainActor
 public enum ChatFrom {
-    public nonisolated static let version = "0.1.0"
+    public nonisolated static let version = "0.2.0"
 
     /// The words the SDK draws itself: the rows' default, what VoiceOver says, and what shows when the page cannot load. Set them before anything else here if your app is not in English.
     public static var strings: ChatFromStrings {
@@ -27,6 +27,11 @@ public enum ChatFrom {
     /// How long a page may stay off screen before it is loaded again. Only for this package's own tests, which have no hour to wait.
     @_spi(Testing) public static func setPageMaxAge(_ seconds: TimeInterval) {
         Hub.shared.pageMaxAge = seconds
+    }
+
+    /// Stands in for StoreKit. Only for this package's own tests, which have no purchase Apple signed to read.
+    @_spi(Testing) public static func setAppStoreReader(_ read: @escaping () async -> [(transaction: String, renewal: String?)]?) {
+        Hub.shared.readAppStoreSubscriptions = { await read()?.map { AppStoreProof(transaction: $0.transaction, renewal: $0.renewal) } }
     }
 
     /// Whether this device can show the chat: iOS 16.4 or later. Below that, ``start(botId:bottomInset:)`` shows no bubble, ``open(botId:)``
@@ -75,24 +80,53 @@ public enum ChatFrom {
 
     /// Says who is using the app, and refreshes their token. Call it when they sign in, on each launch once you know, and when you have a new token.
     ///
-    /// A different person from last time starts from nothing, even if nobody signed out. A chat begun before signing in carries over to whoever signs in first.
+    /// A different person from last time starts from nothing, even if nobody signed out, and without the last one's ``revenueCatAppUserId``. A chat begun before signing in carries over to whoever signs in first.
     /// It holds for every chatbot in the app: with chatbots from more than one ChatFrom account, each one's tool servers marked for it get the token.
     /// - Parameters:
     ///   - userId: Your app's id for this person. It is hashed and stays on the device.
-    ///   - userToken: What your own server signed for them, for chatbots whose tools act for the signed-in user. Never sign it on the device.
+    ///   - userToken: What your own server signed for them, for chatbots whose tools act for the signed-in user, or that tell customers about
+    ///     their RevenueCat subscription. Never sign it on the device.
     ///     It may hold up to 1024 ASCII letters, digits and `. _ ~ -`. A token with any other character is dropped whole, so Base64 has to be
     ///     URL-safe, with no padding; a debug build says so in the Console.
     public static func identify(userId: String, userToken: String? = nil) {
         Hub.shared.identify(userId: userId, userToken: userToken)
     }
 
-    /// Forgets the person: their chat, their visitor id and their token, for every chatbot on this device.
+    /// Forgets the person: their chat, their visitor id and their token, for every chatbot on this device, and the ``revenueCatAppUserId``.
     ///
     /// Call it whenever your app's own sign-in ends: signing out, a session that expired or was revoked, or a launch that finds nobody signed in.
-    /// With nobody to forget it does nothing, so a chat begun before signing in stays. Stop any token refresh first, and call
-    /// ``identify(userId:userToken:)`` for the next person only after this.
+    /// With nobody to forget it changes nothing else, so a chat begun before signing in stays; the RevenueCat id goes every time. Stop any token
+    /// refresh first, and call ``identify(userId:userToken:)`` for the next person, or set the next ``revenueCatAppUserId``, only after this.
     /// - Parameter completion: Called once it has all been forgotten.
     public static func logout(completion: (() -> Void)? = nil) {
         Hub.shared.logout(completion: completion)
+    }
+
+    /// RevenueCat's id for the customer, for a chatbot with the RevenueCat tool whose owner allowed anonymous ids under Tools, so the chat can
+    /// tell the customer about their subscription. Set it whenever RevenueCat's id changes, to `Purchases.shared.appUserID` while
+    /// `Purchases.shared.isAnonymous`, and to nil otherwise.
+    ///
+    /// Only RevenueCat's anonymous ids are passed on, the ones it makes for a customer you have not named, since nobody can guess one. An id
+    /// you chose could be anyone's: for a customer who has signed in, your server signs a token for them, and you pass it to
+    /// ``identify(userId:userToken:)``. A debug build says so in the Console. ``logout(completion:)`` forgets it each time it is called, and
+    /// ``identify(userId:userToken:)`` for someone else does too, since RevenueCat can join an anonymous id to whoever signed in: set the next
+    /// customer's after those.
+    public static var revenueCatAppUserId: String? {
+        get { Hub.shared.revenueCatAppUserId }
+        set { Hub.shared.revenueCatAppUserId = newValue }
+    }
+
+    /// Whether the chat may have the App Store's word on your app's subscriptions, for a chatbot with the RevenueCat tool and your app's
+    /// bundle id under Tools. Off unless you turn it on.
+    ///
+    /// The SDK reads the subscriptions with StoreKit 2, asking the person nothing, and passes on what Apple signed, which ChatFrom checks
+    /// with Apple's own certificate. So the chat can say when a subscription renews or ends, even while RevenueCat cannot be reached. It reads
+    /// them again when the app comes to the front and when the chat opens, and only on a device that can show the chat. It does not listen to
+    /// StoreKit's update streams, which are your app's.
+    /// The page sends them only to a chatbot with the RevenueCat tool on. They belong to whoever is signed in to the App Store on the device,
+    /// which signing out of your app does not change, so ``logout(completion:)`` leaves them.
+    public static var sharesAppStoreSubscriptions: Bool {
+        get { Hub.shared.sharesAppStoreSubscriptions }
+        set { Hub.shared.sharesAppStoreSubscriptions = newValue }
     }
 }
