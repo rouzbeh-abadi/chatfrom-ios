@@ -33,6 +33,8 @@ final class ChatSession: NSObject, ObservableObject {
     }
     @Published private(set) var config: ChatConfig?
     @Published private(set) var talking = false
+    /// The chatbot's own picture as the header last loaded it, so the next time the chat opens it shows at once.
+    var picture: HeaderPicture.Kept?
     @Published private(set) var isOpen = false
 
     private unowned let hub: Hub

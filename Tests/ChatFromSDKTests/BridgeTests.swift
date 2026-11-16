@@ -48,12 +48,21 @@ final class BridgeMessageTests: XCTestCase {
         let picture = { (avatar: Any?) in ChatConfig(["live": true, "avatar": avatar as Any])?.avatarURL(page: page) }
         XCTAssertEqual(picture("/api/public/bot/avatar/0123456789abcdef")?.absoluteString, "https://chatfrom.io/api/public/bot/avatar/0123456789abcdef")
         XCTAssertEqual(picture("https://chatfrom.io/api/public/bot/avatar/0123456789abcdef")?.absoluteString, "https://chatfrom.io/api/public/bot/avatar/0123456789abcdef")
+        // A scheme or host in capitals is the same site.
+        XCTAssertEqual(picture("HTTPS://ChatFrom.io/api/public/bot/avatar/0123456789abcdef")?.host?.lowercased(), "chatfrom.io")
         // Never from anywhere else, whatever the page says.
-        XCTAssertNil(picture("https://elsewhere.example/a.png"))
-        XCTAssertNil(picture("//elsewhere.example/a.png"))
+        XCTAssertNil(picture("https://elsewhere.example/api/public/bot/avatar/0123456789abcdef"))
+        XCTAssertNil(picture("//elsewhere.example/api/public/bot/avatar/0123456789abcdef"))
+        XCTAssertNil(picture("https://chatfrom.io@elsewhere.example/api/public/bot/avatar/0123456789abcdef"))
+        XCTAssertNil(picture("https://someone:secret@chatfrom.io/api/public/bot/avatar/0123456789abcdef"))
         XCTAssertNil(picture("http://chatfrom.io/api/public/bot/avatar/0123456789abcdef"))
-        XCTAssertNil(picture("https://chatfrom.io:8443/a.png"))
+        XCTAssertNil(picture("https://chatfrom.io:8443/api/public/bot/avatar/0123456789abcdef"))
         XCTAssertNil(picture("data:image/png;base64,AAAA"))
+        // Nor anything on the site that is not a chatbot's picture.
+        XCTAssertNil(picture("/favicon.ico"))
+        XCTAssertNil(picture("/api/assistants/bot/avatar?v=0123456789abcdef"))
+        // A page with no host, such as a file, gives no picture at all.
+        XCTAssertNil(ChatConfig(["live": true, "avatar": "/api/public/bot/avatar/0123456789abcdef"])?.avatarURL(page: URL(fileURLWithPath: "/tmp/mobile/bot")))
         // None, and the initials show.
         XCTAssertNil(picture(""))
         XCTAssertNil(picture(NSNull()))

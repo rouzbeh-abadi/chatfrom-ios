@@ -2,7 +2,8 @@
 
 ## 0.2.1
 
-- The header shows the chatbot's own picture, when it has one under Deploy, Appearance, in place of its initials. It is loaded from ChatFrom alone, with no cookie, and the app's URL cache keeps it.
+- The header shows the chatbot's own picture, when it has one under Deploy, Appearance, in place of its initials, on white, and at once each time the chat opens again. A new picture takes the old one's place without the initials showing between them.
+- The picture is loaded only from the chat page's own site, with no cookie or stored credential of the app's, and kept in a small cache of the SDK's own. A PNG, JPEG or WebP is drawn at the header's size; anything else, or one that says it is larger than 2048 pixels a side, is never unpacked.
 
 ## 0.2.0
 

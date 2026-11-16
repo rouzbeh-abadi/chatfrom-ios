@@ -1,5 +1,7 @@
+import ImageIO
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import XCTest
 @testable import ChatFromSDK
 
@@ -15,38 +17,84 @@ final class AvatarLabelTests: XCTestCase {
         XCTAssertLessThan(avatar.intrinsicContentSize.height, 52)
     }
 
-    func testThePictureFillsTheCircleInPlaceOfTheInitials() throws {
+    /// The label as it draws itself, its own layer only, so the picture's view over it is left out.
+    private func drawn(_ avatar: AvatarLabel) -> Data {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(bounds: avatar.bounds, format: format).pngData { context in
+            avatar.layer.draw(in: context.cgContext)
+        }
+    }
+
+    func testThePictureFillsTheCircleOnWhiteWithTheInitialsLeftOut() throws {
         let avatar = AvatarLabel()
         avatar.font = .systemFont(ofSize: 12, weight: .semibold)
-        avatar.text = "LL"
+        avatar.textColor = .black
         avatar.frame = CGRect(origin: .zero, size: avatar.intrinsicContentSize)
+        let empty = AvatarLabel()
+        empty.font = avatar.font
+        empty.frame = avatar.frame
+        avatar.text = "LL"
+        XCTAssertNotEqual(drawn(avatar), drawn(empty), "the initials are drawn without a picture")
+
+        // A see-through logo: the initials must not show through it.
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        avatar.picture = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8), format: format).image { _ in }
         avatar.layoutIfNeeded()
-        let shown = { avatar.subviews.compactMap { $0 as? UIImageView }.first { !$0.isHidden } }
-        XCTAssertNil(shown())
-        avatar.picture = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { _ in }
-        avatar.layoutIfNeeded()
-        let picture = try XCTUnwrap(shown())
+        XCTAssertEqual(drawn(avatar), drawn(empty), "the initials are left out under a picture")
+        let picture = try XCTUnwrap(avatar.subviews.compactMap { $0 as? UIImageView }.first { !$0.isHidden })
         XCTAssertEqual(picture.frame, avatar.bounds)
         XCTAssertEqual(picture.contentMode, .scaleAspectFill)
-        // The circle stays the size the initials give it.
-        XCTAssertEqual(avatar.intrinsicContentSize, CGSize(width: 30, height: 30))
+        XCTAssertEqual(picture.backgroundColor, .white)
+
         avatar.picture = nil
-        XCTAssertNil(shown())
+        XCTAssertTrue(avatar.subviews.compactMap { $0 as? UIImageView }.allSatisfy(\.isHidden))
+        XCTAssertNotEqual(drawn(avatar), drawn(empty), "the initials come back with no picture")
     }
 }
 
-/// Answers every request with what the test set, as the network would.
+/// Answers a request by its address alone, so nothing is shared between tests: `/png/<w>x<h>` a PNG of that size, `/gif` a GIF, `/page` a web page, `/large` more than a picture may be, `/missing` a 404, and `/echo` the request's own headers.
 final class PictureStub: URLProtocol {
-    nonisolated(unsafe) static var answer: (status: Int, body: Data) = (200, Data())
-    nonisolated(unsafe) static var asked: [URLRequest] = []
+    static func png(width: Int, height: Int) -> Data {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).pngData { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+    }
+
+    static var gif: Data {
+        let data = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(data, UTType.gif.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, UIImage(data: png(width: 4, height: 4))!.cgImage!, nil)
+        CGImageDestinationFinalize(destination)
+        return data as Data
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
     override func startLoading() {
-        Self.asked.append(request)
-        let response = HTTPURLResponse(url: request.url!, statusCode: Self.answer.status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "image/png"])!
+        let parts = request.url!.pathComponents
+        var status = 200
+        let body: Data
+        switch parts.dropFirst().first {
+        case "png":
+            let size = parts.last!.split(separator: "x").compactMap { Int($0) }
+            body = Self.png(width: size[0], height: size[1])
+        case "gif": body = Self.gif
+        case "page": body = Data("<!doctype html><p>Not a picture".utf8)
+        case "large": body = Self.png(width: 4, height: 4) + Data(count: AvatarPicture.maxBytes)
+        case "echo": body = try! JSONSerialization.data(withJSONObject: request.allHTTPHeaderFields ?? [:])
+        default:
+            status = 404
+            body = Data()
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "image/png"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Self.answer.body)
+        client?.urlProtocol(self, didLoad: body)
         client?.urlProtocolDidFinishLoading(self)
     }
 
@@ -54,44 +102,152 @@ final class PictureStub: URLProtocol {
 }
 
 final class AvatarPictureTests: XCTestCase {
-    private let url = URL(string: "https://chatfrom.io/api/public/bot/avatar/0123456789abcdef")!
-    private var session: URLSession {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [PictureStub.self]
-        return URLSession(configuration: configuration)
+    private var session: URLSession!
+
+    override func setUp() {
+        super.setUp()
+        session = AvatarPicture.makeSession(protocolClasses: [PictureStub.self])
     }
 
-    /// Four pixels a side, whatever the screen's scale.
-    private var png: Data {
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        return UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4), format: format).pngData { _ in }
+    override func tearDown() {
+        session.invalidateAndCancel()
+        super.tearDown()
     }
 
-    func testAPictureLoads() async {
-        PictureStub.answer = (200, png)
-        let image = await AvatarPicture.load(url, session: session)
-        XCTAssertEqual(image?.size, CGSize(width: 4, height: 4))
+    private func load(_ path: String) async -> UIImage? {
+        await AvatarPicture.load(URL(string: "https://chatfrom.io\(path)")!, session: session)
     }
 
-    func testNothingShowsForAMissingPictureSomethingElseOrTooMuch() async {
-        PictureStub.answer = (404, png)
-        let missing = await AvatarPicture.load(url, session: session)
+    func testAPictureLoadsAsASmallOneToDraw() async throws {
+        let small = await load("/png/4x4")
+        XCTAssertEqual(try XCTUnwrap(small).size, CGSize(width: 4, height: 4))
+        // A larger one is drawn at the header's own size, never unpacked whole.
+        let loaded = await load("/png/1000x600")
+        let large = try XCTUnwrap(loaded)
+        XCTAssertEqual(max(large.size.width, large.size.height), CGFloat(AvatarPicture.drawnSide))
+    }
+
+    func testNothingShowsForWhatIsNotAPictureTheHeaderDraws() async {
+        let missing = await load("/missing")
+        let page = await load("/page")
+        let gif = await load("/gif")
+        let large = await load("/large")
+        // A picture that says it is larger than any ChatFrom keeps is not unpacked at all.
+        let wide = await load("/png/\(AvatarPicture.maxSide + 1)x8")
         XCTAssertNil(missing)
-        PictureStub.answer = (200, Data("<!doctype html>".utf8))
-        let page = await AvatarPicture.load(url, session: session)
         XCTAssertNil(page)
-        PictureStub.answer = (200, png + Data(count: AvatarPicture.maxBytes))
-        let large = await AvatarPicture.load(url, session: session)
+        XCTAssertNil(gif)
         XCTAssertNil(large)
+        XCTAssertNil(wide)
     }
 
-    func testTheRequestCarriesNothingOfTheApps() {
+    func testTheRequestNamesTheSDKAndTakesNothingOfTheApps() async throws {
+        let url = try XCTUnwrap(URL(string: "https://chatfrom.io/echo"))
+        let sent = try JSONSerialization.jsonObject(with: try await session.data(from: url).0) as? [String: String]
+        XCTAssertEqual(sent?["User-Agent"], "ChatFromSDK-iOS/\(ChatFrom.version)")
+        // URLSession adds cookies and stored credentials in its own HTTP loader, past where a stub can see the request,
+        // so what is checked is that the session has neither to add, nor a place to keep what an answer sets.
         let configuration = AvatarPicture.session.configuration
         XCTAssertNil(configuration.httpCookieStorage)
         XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertNil(configuration.urlCredentialStorage)
+        XCTAssertTrue(configuration.urlCache === AvatarPicture.cache, "the SDK's own cache, not the app's")
     }
 }
+
+/// Loads that finish when the test says, in any order.
+@MainActor
+final class HeldLoads {
+    private(set) var asked: [URL] = []
+    private var waiting: [URL: CheckedContinuation<UIImage?, Never>] = [:]
+
+    func load(_ url: URL) async -> UIImage? {
+        asked.append(url)
+        return await withCheckedContinuation { waiting[url] = $0 }
+    }
+
+    /// Waits for the load to have been asked for, finishes it, and lets what follows run.
+    func finish(_ url: URL, with image: UIImage?) async {
+        for _ in 0..<100 where waiting[url] == nil { await Task.yield() }
+        waiting.removeValue(forKey: url)?.resume(returning: image)
+        for _ in 0..<20 { await Task.yield() }
+    }
+}
+
+@MainActor
+final class HeaderPictureTests: XCTestCase {
+    private let a = URL(string: "https://chatfrom.io/api/public/bot/avatar/aaaaaaaaaaaaaaaa")!
+    private let b = URL(string: "https://chatfrom.io/api/public/bot/avatar/bbbbbbbbbbbbbbbb")!
+    private let image = UIImage()
+    private let other = UIImage()
+    private var loads: HeldLoads!
+    private var kept: HeaderPicture.Kept?
+    private var shown: [(image: UIImage?, animated: Bool)] = []
+    private var picture: HeaderPicture!
+
+    override func setUp() async throws {
+        loads = HeldLoads()
+        kept = nil
+        shown = []
+        picture = HeaderPicture(load: { [loads] in await loads!.load($0) }, kept: { [unowned self] in self.kept }, keep: { [unowned self] in self.kept = $0 }, display: { [unowned self] in self.shown.append(($0, $1)) })
+    }
+
+    func testAPictureFadesInOnceLoadedAndIsKeptForTheNextScreen() async {
+        picture.show(a)
+        await Task.yield()
+        XCTAssertTrue(shown.isEmpty, "nothing changes while it loads")
+        await loads.finish(a, with: image)
+        XCTAssertEqual(shown.count, 1)
+        XCTAssertTrue(shown[0].image === image && shown[0].animated)
+        XCTAssertEqual(kept?.url, a)
+
+        // The next screen shows it at once, without asking again.
+        let next = HeaderPicture(load: { [loads] in await loads!.load($0) }, kept: { [unowned self] in self.kept }, keep: { _ in }, display: { [unowned self] in self.shown.append(($0, $1)) })
+        next.show(a)
+        XCTAssertEqual(loads.asked, [a])
+        XCTAssertTrue(shown.last?.image === image && shown.last?.animated == false)
+    }
+
+    func testANewerAddressWinsOverOneStillLoading() async {
+        picture.show(a)
+        picture.show(b)
+        await loads.finish(a, with: other)
+        XCTAssertTrue(shown.isEmpty, "the older picture never shows")
+        await loads.finish(b, with: image)
+        XCTAssertTrue(shown.last?.image === image)
+        XCTAssertEqual(kept?.url, b)
+    }
+
+    func testAChangedPictureStaysUntilTheNewOneIsInWithNoInitialsBetween() async {
+        picture.show(a)
+        await loads.finish(a, with: other)
+        picture.show(b)
+        await Task.yield()
+        XCTAssertEqual(shown.count, 1, "the old picture stays while the new one loads")
+        await loads.finish(b, with: image)
+        XCTAssertEqual(shown.map { $0.image === image }, [false, true])
+    }
+
+    func testOneThatDidNotLoadShowsTheInitialsAndIsAskedForAgainNextTime() async {
+        picture.show(a)
+        await loads.finish(a, with: nil)
+        XCTAssertNil(shown.last?.image)
+        XCTAssertNil(picture.wanted)
+        picture.show(a)
+        await loads.finish(a, with: image)
+        XCTAssertEqual(loads.asked, [a, a])
+        XCTAssertTrue(shown.last?.image === image)
+    }
+
+    func testNoPictureShowsTheInitialsAtOnce() async {
+        picture.show(a)
+        await loads.finish(a, with: image)
+        picture.show(nil)
+        XCTAssertNil(shown.last?.image)
+        XCTAssertEqual(shown.last?.animated, false)
+    }
+}
+
 
 @MainActor
 final class RowTitleTests: XCTestCase {

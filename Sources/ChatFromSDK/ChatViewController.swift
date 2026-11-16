@@ -22,9 +22,12 @@ final class ChatViewController: UIViewController {
     private let failureLabel = UILabel()
     private let retryButton = UIButton(type: .system)
     private var cancellables = Set<AnyCancellable>()
-    /// The chatbot's picture the avatar shows, or is loading; nil while it shows the initials.
-    private var pictureURL: URL?
-    private var pictureLoad: Task<Void, Never>?
+    /// The chatbot's own picture in the avatar's circle, kept with the session so the next screen shows it at once.
+    private lazy var picture = HeaderPicture(
+        kept: { [weak self] in self?.session.picture },
+        keep: { [weak self] in self?.session.picture = $0 },
+        display: { [weak self] image, animated in self?.showPicture(image, animated: animated) }
+    )
     private var darkStatusBar = true
     private var lastPhase: ChatSession.Phase?
     private var isCard: Bool { UIDevice.current.userInterfaceIdiom == .pad }
@@ -269,7 +272,7 @@ final class ChatViewController: UIViewController {
         titleLabel.text = live ? config?.displayName : Hub.shared.strings.chat
         avatar.text = config?.initials
         avatar.isHidden = !live
-        showPicture(live ? config?.avatarURL(page: session.pageURL) : nil)
+        picture.show(live ? config?.avatarURL(page: session.pageURL) : nil)
         darkStatusBar = !live || !ChatColor.readableIsWhite(on: accent)
         let change = {
             self.headerBackground.backgroundColor = live ? ChatColor.color(accent) : .white
@@ -291,24 +294,13 @@ final class ChatViewController: UIViewController {
         }
     }
 
-    /// The chatbot's own picture in the avatar's circle, over its initials, once it has loaded; the initials alone while it loads, when it does not, or when there is none.
-    private func showPicture(_ url: URL?) {
-        guard url != pictureURL else { return }
-        pictureURL = url
-        pictureLoad?.cancel()
-        avatar.picture = nil
-        guard let url else { return }
-        pictureLoad = Task { [weak self] in
-            let image = await AvatarPicture.load(url)
-            // A newer picture, or none, may have been asked for meanwhile.
-            guard let self, !Task.isCancelled, self.pictureURL == url else { return }
-            guard let image else {
-                // Asked for again the next time the header changes, as after the next message: the phone may have been offline.
-                self.pictureURL = nil
-                return
-            }
-            UIView.transition(with: self.avatar, duration: 0.2, options: .transitionCrossDissolve) { self.avatar.picture = image }
+    /// The picture in the avatar's circle, over its initials, or none; a picture that has just loaded fades in.
+    private func showPicture(_ image: UIImage?, animated: Bool) {
+        guard animated else {
+            avatar.picture = image
+            return
         }
+        UIView.transition(with: avatar, duration: 0.2, options: .transitionCrossDissolve) { self.avatar.picture = image }
     }
 
     private func applyPhase(_ phase: ChatSession.Phase) {
@@ -394,6 +386,8 @@ final class AvatarLabel: UILabel {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        // On white, as the web chat draws it, so a logo's see-through parts read on any colour.
+        pictureView.backgroundColor = .white
         pictureView.contentMode = .scaleAspectFill
         pictureView.clipsToBounds = true
         pictureView.isHidden = true
