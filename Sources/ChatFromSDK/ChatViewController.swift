@@ -22,12 +22,6 @@ final class ChatViewController: UIViewController {
     private let failureLabel = UILabel()
     private let retryButton = UIButton(type: .system)
     private var cancellables = Set<AnyCancellable>()
-    /// The chatbot's own picture in the avatar's circle, kept with the session so the next screen shows it at once.
-    private lazy var picture = HeaderPicture(
-        kept: { [weak self] in self?.session.picture },
-        keep: { [weak self] in self?.session.picture = $0 },
-        display: { [weak self] image, animated in self?.showPicture(image, animated: animated) }
-    )
     private var darkStatusBar = true
     private var lastPhase: ChatSession.Phase?
     private var isCard: Bool { UIDevice.current.userInterfaceIdiom == .pad }
@@ -63,6 +57,13 @@ final class ChatViewController: UIViewController {
         session.$phase
             .receive(on: DispatchQueue.main)
             .sink { [weak self] phase in self?.applyPhase(phase) }
+            .store(in: &cancellables)
+        // The picture the session has shows at once; one that loads while the chat is open fades in.
+        avatar.picture = session.picture
+        session.$picture
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] image in self?.showPicture(image, animated: true) }
             .store(in: &cancellables)
         applyLook(animated: false)
         applyPhase(session.phase)
@@ -272,7 +273,6 @@ final class ChatViewController: UIViewController {
         titleLabel.text = live ? config?.displayName : Hub.shared.strings.chat
         avatar.text = config?.initials
         avatar.isHidden = !live
-        picture.show(live ? config?.avatarURL(page: session.pageURL) : nil)
         darkStatusBar = !live || !ChatColor.readableIsWhite(on: accent)
         let change = {
             self.headerBackground.backgroundColor = live ? ChatColor.color(accent) : .white

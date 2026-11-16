@@ -121,10 +121,28 @@ final class AvatarPictureTests: XCTestCase {
     func testAPictureLoadsAsASmallOneToDraw() async throws {
         let small = await load("/png/4x4")
         XCTAssertEqual(try XCTUnwrap(small).size, CGSize(width: 4, height: 4))
-        // A larger one is drawn at the header's own size, never unpacked whole.
+        // A larger one is drawn at the header's own size, its shorter side covering the circle, never unpacked whole.
         let loaded = await load("/png/1000x600")
         let large = try XCTUnwrap(loaded)
-        XCTAssertEqual(max(large.size.width, large.size.height), CGFloat(AvatarPicture.drawnSide))
+        XCTAssertEqual(min(large.size.width, large.size.height), CGFloat(AvatarPicture.drawnSide))
+        XCTAssertLessThan(max(large.size.width, large.size.height), 1000)
+    }
+
+    func testAPictureThatIsNotSquareCoversTheCircleSharply() async throws {
+        // The circle shows its middle, so its shorter side is the one drawn at the header's size.
+        let loaded = await load("/png/1024x256")
+        XCTAssertEqual(try XCTUnwrap(loaded).size, CGSize(width: 512, height: 128))
+    }
+
+    func testTheCacheKeepsAPictureOnDisk() throws {
+        let url = try XCTUnwrap(URL(string: "https://chatfrom.io/api/public/6f1c0000-0000-4000-8000-000000000001/avatar/0123456789abcdef"))
+        let request = URLRequest(url: url)
+        let response = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Cache-Control": "private, max-age=31536000, immutable", "Content-Type": "image/webp"]))
+        // Larger than the memory part keeps, so only the disk can hold it: below 5 MiB URLCache keeps nothing there.
+        let picture = Data(count: 100 * 1024)
+        AvatarPicture.cache.storeCachedResponse(CachedURLResponse(response: response, data: picture, userInfo: nil, storagePolicy: .allowed), for: request)
+        defer { AvatarPicture.cache.removeCachedResponse(for: request) }
+        XCTAssertEqual(AvatarPicture.cache.cachedResponse(for: request)?.data.count, picture.count)
     }
 
     func testNothingShowsForWhatIsNotAPictureTheHeaderDraws() async {
@@ -176,36 +194,31 @@ final class HeldLoads {
 
 @MainActor
 final class HeaderPictureTests: XCTestCase {
-    private let a = URL(string: "https://chatfrom.io/api/public/bot/avatar/aaaaaaaaaaaaaaaa")!
-    private let b = URL(string: "https://chatfrom.io/api/public/bot/avatar/bbbbbbbbbbbbbbbb")!
+    private let a = URL(string: "https://chatfrom.io/api/public/6f1c0000-0000-4000-8000-000000000001/avatar/aaaaaaaaaaaaaaaa")!
+    private let b = URL(string: "https://chatfrom.io/api/public/6f1c0000-0000-4000-8000-000000000001/avatar/bbbbbbbbbbbbbbbb")!
     private let image = UIImage()
     private let other = UIImage()
     private var loads: HeldLoads!
-    private var kept: HeaderPicture.Kept?
-    private var shown: [(image: UIImage?, animated: Bool)] = []
+    private var shown: [UIImage?] = []
     private var picture: HeaderPicture!
 
     override func setUp() async throws {
         loads = HeldLoads()
-        kept = nil
         shown = []
-        picture = HeaderPicture(load: { [loads] in await loads!.load($0) }, kept: { [unowned self] in self.kept }, keep: { [unowned self] in self.kept = $0 }, display: { [unowned self] in self.shown.append(($0, $1)) })
+        picture = HeaderPicture(load: { [loads] in await loads!.load($0) }, display: { [unowned self] in self.shown.append($0) })
     }
 
-    func testAPictureFadesInOnceLoadedAndIsKeptForTheNextScreen() async {
+    func testAPictureShowsOnceLoadedAndIsNotAskedForAgain() async {
         picture.show(a)
         await Task.yield()
         XCTAssertTrue(shown.isEmpty, "nothing changes while it loads")
         await loads.finish(a, with: image)
         XCTAssertEqual(shown.count, 1)
-        XCTAssertTrue(shown[0].image === image && shown[0].animated)
-        XCTAssertEqual(kept?.url, a)
-
-        // The next screen shows it at once, without asking again.
-        let next = HeaderPicture(load: { [loads] in await loads!.load($0) }, kept: { [unowned self] in self.kept }, keep: { _ in }, display: { [unowned self] in self.shown.append(($0, $1)) })
-        next.show(a)
+        XCTAssertTrue(shown[0] === image)
+        // The page saying the same again, as when it loads again, asks for nothing.
+        picture.show(a)
         XCTAssertEqual(loads.asked, [a])
-        XCTAssertTrue(shown.last?.image === image && shown.last?.animated == false)
+        XCTAssertEqual(shown.count, 1)
     }
 
     func testANewerAddressWinsOverOneStillLoading() async {
@@ -214,8 +227,7 @@ final class HeaderPictureTests: XCTestCase {
         await loads.finish(a, with: other)
         XCTAssertTrue(shown.isEmpty, "the older picture never shows")
         await loads.finish(b, with: image)
-        XCTAssertTrue(shown.last?.image === image)
-        XCTAssertEqual(kept?.url, b)
+        XCTAssertTrue(shown.last! === image)
     }
 
     func testAChangedPictureStaysUntilTheNewOneIsInWithNoInitialsBetween() async {
@@ -225,29 +237,27 @@ final class HeaderPictureTests: XCTestCase {
         await Task.yield()
         XCTAssertEqual(shown.count, 1, "the old picture stays while the new one loads")
         await loads.finish(b, with: image)
-        XCTAssertEqual(shown.map { $0.image === image }, [false, true])
+        XCTAssertEqual(shown.map { $0 === image }, [false, true])
     }
 
     func testOneThatDidNotLoadShowsTheInitialsAndIsAskedForAgainNextTime() async {
         picture.show(a)
         await loads.finish(a, with: nil)
-        XCTAssertNil(shown.last?.image)
+        XCTAssertNil(shown.last!)
         XCTAssertNil(picture.wanted)
         picture.show(a)
         await loads.finish(a, with: image)
         XCTAssertEqual(loads.asked, [a, a])
-        XCTAssertTrue(shown.last?.image === image)
+        XCTAssertTrue(shown.last! === image)
     }
 
     func testNoPictureShowsTheInitialsAtOnce() async {
         picture.show(a)
         await loads.finish(a, with: image)
         picture.show(nil)
-        XCTAssertNil(shown.last?.image)
-        XCTAssertEqual(shown.last?.animated, false)
+        XCTAssertNil(shown.last!)
     }
 }
-
 
 @MainActor
 final class RowTitleTests: XCTestCase {

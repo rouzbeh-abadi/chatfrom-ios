@@ -13,10 +13,10 @@ enum AvatarPicture {
     /// What ChatFrom serves. ImageIO reads many more, none of which a picture's address should answer with.
     static let types: Set<String> = [UTType.png.identifier, UTType.jpeg.identifier, UTType.webP.identifier]
 
-    /// A cache of the SDK's own in the app's Caches folder, which the system may empty when space runs low: the app's own cache keeps its size and its rules.
+    /// A cache of the SDK's own in the app's Caches folder, which the system may empty when space runs low: the app's own cache keeps its size and its rules. URLCache writes nothing to disk below 5 MiB, and keeps an answer only up to a twentieth of each part, so 20 MiB keeps a picture of up to 1 MiB on disk, and 1 MiB one of up to 50 KB in memory.
     static let cache = URLCache(
-        memoryCapacity: 256 * 1024,
-        diskCapacity: 4 * 1024 * 1024,
+        memoryCapacity: 1024 * 1024,
+        diskCapacity: 20 * 1024 * 1024,
         directory: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("ChatFromSDK/Pictures", isDirectory: true)
     )
 
@@ -50,7 +50,8 @@ enum AvatarPicture {
                     return nil
                 }
             }
-            return picture(from: data)
+            let read = data
+            return await Task.detached(priority: .utility) { picture(from: read) }.value
         } catch {
             return nil
         }
@@ -63,34 +64,30 @@ enum AvatarPicture {
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int,
               (1...maxSide).contains(width), (1...maxSide).contains(height) else { return nil }
+        // The circle shows the middle of a picture that is not square, so its shorter side is the one drawn at drawnSide.
+        let longer = max(width, height), shorter = min(width, height)
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: drawnSide,
+            kCGImageSourceThumbnailMaxPixelSize: min(longer, (drawnSide * longer + shorter - 1) / shorter),
         ]
         guard let small = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         return UIImage(cgImage: small)
     }
 }
 
-/// Which picture the chat's header shows: the chatbot's own once it has loaded, or its initials. One the session loaded before shows at once, with no fade, and a picture that changes stays until the new one is in, so the initials never flash between them. A newer address, or none, takes the place of one still loading; one that did not load is asked for again the next time the header changes, as when the chat opens again.
+/// Which picture the chat's header shows: the chatbot's own once it has loaded, or its initials. The session holds one for as long as the app runs, and asks it as soon as the page says which picture is the chatbot's, so the chat opens with the picture there, a picture changed while the chat was closed is in by the time it opens, and a load is never lost with a screen that closed. A picture that changes stays until the new one is in, so the initials never show between them. A newer address, or none, takes the place of one still loading; one that did not load shows the initials, and is asked for again the next time the page says it, as when the page loads again.
 @MainActor
 final class HeaderPicture {
-    typealias Kept = (url: URL, image: UIImage)
-
     private let load: (URL) async -> UIImage?
-    private let kept: () -> Kept?
-    private let keep: (Kept) -> Void
-    private let display: (_ image: UIImage?, _ animated: Bool) -> Void
+    private let display: (UIImage?) -> Void
     /// The address shown or loading; nil while the initials show.
     private(set) var wanted: URL?
     private var loading: Task<Void, Never>?
 
-    init(load: @escaping (URL) async -> UIImage? = { await AvatarPicture.load($0) }, kept: @escaping () -> Kept?, keep: @escaping (Kept) -> Void, display: @escaping (_ image: UIImage?, _ animated: Bool) -> Void) {
+    init(load: @escaping (URL) async -> UIImage? = { await AvatarPicture.load($0) }, display: @escaping (UIImage?) -> Void) {
         self.load = load
-        self.kept = kept
-        self.keep = keep
         self.display = display
     }
 
@@ -99,24 +96,15 @@ final class HeaderPicture {
         wanted = url
         loading?.cancel()
         guard let url else {
-            display(nil, false)
-            return
-        }
-        if let kept = kept(), kept.url == url {
-            display(kept.image, false)
+            display(nil)
             return
         }
         let load = self.load
         loading = Task { [weak self] in
             let image = await load(url)
             guard let self, !Task.isCancelled, self.wanted == url else { return }
-            guard let image else {
-                self.wanted = nil
-                self.display(nil, false)
-                return
-            }
-            self.keep((url, image))
-            self.display(image, true)
+            if image == nil { self.wanted = nil }
+            self.display(image)
         }
     }
 }

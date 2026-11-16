@@ -39,11 +39,15 @@ struct ChatConfig: Equatable {
         return letters.isEmpty ? "CF" : letters
     }
 
-    /// Where to load the chatbot's picture from: its address read against the chat page's, and only a picture's address on the page's own site (its scheme, host and port, with no name or password before the host), never anywhere else.
+    /// Where to load the chatbot's picture from: its address read against the chat page's, and only a picture's address (`/api/public/<chatbot>/avatar/<version>`, nothing escaped in it, so no `..` or `%2E%2E` can step out of it) on the page's own site (its scheme, host and port, with no name or password before the host), never anywhere else.
     func avatarURL(page: URL) -> URL? {
         guard let avatar, let host = page.host?.lowercased(), let url = URL(string: avatar, relativeTo: page)?.absoluteURL else { return nil }
         guard url.scheme?.lowercased() == page.scheme?.lowercased(), url.host?.lowercased() == host, url.port == page.port,
-              url.user == nil, url.password == nil, url.path.hasPrefix("/api/public/") else { return nil }
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath, !path.contains("%") else { return nil }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 6, parts[0].isEmpty, parts[1] == "api", parts[2] == "public", UUID(uuidString: parts[3]) != nil, parts[4] == "avatar",
+              parts[5].count == 16, parts[5].allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { return nil }
         return url
     }
 }

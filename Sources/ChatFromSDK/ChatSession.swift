@@ -33,8 +33,9 @@ final class ChatSession: NSObject, ObservableObject {
     }
     @Published private(set) var config: ChatConfig?
     @Published private(set) var talking = false
-    /// The chatbot's own picture as the header last loaded it, so the next time the chat opens it shows at once.
-    var picture: HeaderPicture.Kept?
+    /// The chatbot's own picture as the header shows it, loaded as soon as the page says which picture it is, so the chat opens with it; nil while the header shows the initials.
+    @Published private(set) var picture: UIImage?
+    private lazy var pictures = HeaderPicture(display: { [weak self] in self?.picture = $0 })
     @Published private(set) var isOpen = false
 
     private unowned let hub: Hub
@@ -233,6 +234,7 @@ final class ChatSession: NSObject, ObservableObject {
         case .config(let config):
             guard !awaitingCommit else { return }
             self.config = config
+            pictures.show(config.live ? config.avatarURL(page: pageURL) : nil)
             if !config.live {
                 chatLog.notice("Chatbot \(self.botId, privacy: .public) is not live, or not opened to mobile apps. Turn on Mobile apps under Deploy.")
             }
