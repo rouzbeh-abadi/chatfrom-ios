@@ -43,6 +43,26 @@ final class BridgeMessageTests: XCTestCase {
         XCTAssertEqual(config.bubbleHeight, 64)
     }
 
+    func testAChatbotsPictureIsLoadedFromThePagesOwnSiteAlone() throws {
+        let page = try XCTUnwrap(URL(string: "https://chatfrom.io/mobile/bot"))
+        let picture = { (avatar: Any?) in ChatConfig(["live": true, "avatar": avatar as Any])?.avatarURL(page: page) }
+        XCTAssertEqual(picture("/api/public/bot/avatar/0123456789abcdef")?.absoluteString, "https://chatfrom.io/api/public/bot/avatar/0123456789abcdef")
+        XCTAssertEqual(picture("https://chatfrom.io/api/public/bot/avatar/0123456789abcdef")?.absoluteString, "https://chatfrom.io/api/public/bot/avatar/0123456789abcdef")
+        // Never from anywhere else, whatever the page says.
+        XCTAssertNil(picture("https://elsewhere.example/a.png"))
+        XCTAssertNil(picture("//elsewhere.example/a.png"))
+        XCTAssertNil(picture("http://chatfrom.io/api/public/bot/avatar/0123456789abcdef"))
+        XCTAssertNil(picture("https://chatfrom.io:8443/a.png"))
+        XCTAssertNil(picture("data:image/png;base64,AAAA"))
+        // None, and the initials show.
+        XCTAssertNil(picture(""))
+        XCTAssertNil(picture(NSNull()))
+        XCTAssertNil(try XCTUnwrap(ChatConfig(["live": true])).avatar)
+        // A local server for trying the SDK out, on its own port.
+        let local = try XCTUnwrap(URL(string: "http://localhost:3000/mobile/bot"))
+        XCTAssertEqual(ChatConfig(["live": true, "avatar": "/api/public/bot/avatar/0123456789abcdef"])?.avatarURL(page: local)?.absoluteString, "http://localhost:3000/api/public/bot/avatar/0123456789abcdef")
+    }
+
     func testInitialsAsTheWebChatHasThem() throws {
         XCTAssertEqual(try XCTUnwrap(ChatConfig(["live": true, "display_name": "acme"])).initials, "A")
         XCTAssertEqual(try XCTUnwrap(ChatConfig(["live": true, "display_name": "  one two three "])).initials, "OT")

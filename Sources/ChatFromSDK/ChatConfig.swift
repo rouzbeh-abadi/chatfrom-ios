@@ -13,11 +13,15 @@ struct ChatConfig: Equatable {
     let label: String
     /// The bubble's height in points, as the widget has them (BUBBLE_SIZES in libs/widget-icons.ts).
     let bubbleHeight: CGFloat
+    /// The chatbot's own picture, as the page gives its address on ChatFrom (`/api/public/<bot>/avatar/<version>`); nil, and the header shows its initials.
+    let avatar: String?
 
     init?(_ raw: Any?) {
         guard let raw = raw as? [String: Any], let live = raw["live"] as? Bool else { return nil }
         self.live = live
         displayName = (raw["display_name"] as? String) ?? ""
+        let picture = raw["avatar"] as? String
+        avatar = picture?.isEmpty == false ? picture : nil
         accent = raw["accent"] as? String ?? ChatColor.defaultAccent
         position = Position(rawValue: raw["position"] as? String ?? "") ?? .right
         icon = raw["icon"] as? String ?? ChatIcon.defaultName
@@ -33,6 +37,39 @@ struct ChatConfig: Equatable {
     var initials: String {
         let letters = displayName.split(whereSeparator: \.isWhitespace).prefix(2).compactMap { $0.first?.uppercased() }.joined()
         return letters.isEmpty ? "CF" : letters
+    }
+
+    /// Where to load the chatbot's picture from: its address read against the chat page's, and only on the page's own site (scheme, host and port), never anywhere else.
+    func avatarURL(page: URL) -> URL? {
+        guard let avatar, let url = URL(string: avatar, relativeTo: page)?.absoluteURL else { return nil }
+        guard url.scheme == page.scheme, url.host?.lowercased() == page.host?.lowercased(), url.port == page.port else { return nil }
+        return url
+    }
+}
+
+/// The chatbot's own picture for the header, loaded apart from the chat page, which in an app draws no header of its own.
+enum AvatarPicture {
+    /// The most a picture may be: ChatFrom keeps none over 256 KB.
+    static let maxBytes = 256 * 1024
+
+    /// Nothing of the app's own goes with the request, no cookie sent or kept; the app's URL cache keeps the picture, as long as ChatFrom says (a year, for a picture's own address).
+    static let session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = .shared
+        return URLSession(configuration: configuration)
+    }()
+
+    /// The picture at `url`; nil when it does not load, is not a picture, or is larger than ChatFrom keeps.
+    static func load(_ url: URL, session: URLSession = session) async -> UIImage? {
+        do {
+            let (data, response) = try await session.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= maxBytes else { return nil }
+            return UIImage(data: data)
+        } catch {
+            return nil
+        }
     }
 }
 

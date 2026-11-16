@@ -10,7 +10,7 @@ import UIKit
 /// The chat needs iOS 16.4. On older versions the package still links: there is no bubble, and rows are grey.
 @MainActor
 public enum ChatFrom {
-    public nonisolated static let version = "0.2.0"
+    public nonisolated static let version = "0.2.1"
 
     /// The words the SDK draws itself: the rows' default, what VoiceOver says, and what shows when the page cannot load. Set them before anything else here if your app is not in English.
     public static var strings: ChatFromStrings {

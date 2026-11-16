@@ -22,6 +22,9 @@ final class ChatViewController: UIViewController {
     private let failureLabel = UILabel()
     private let retryButton = UIButton(type: .system)
     private var cancellables = Set<AnyCancellable>()
+    /// The chatbot's picture the avatar shows, or is loading; nil while it shows the initials.
+    private var pictureURL: URL?
+    private var pictureLoad: Task<Void, Never>?
     private var darkStatusBar = true
     private var lastPhase: ChatSession.Phase?
     private var isCard: Bool { UIDevice.current.userInterfaceIdiom == .pad }
@@ -266,6 +269,7 @@ final class ChatViewController: UIViewController {
         titleLabel.text = live ? config?.displayName : Hub.shared.strings.chat
         avatar.text = config?.initials
         avatar.isHidden = !live
+        showPicture(live ? config?.avatarURL(page: session.pageURL) : nil)
         darkStatusBar = !live || !ChatColor.readableIsWhite(on: accent)
         let change = {
             self.headerBackground.backgroundColor = live ? ChatColor.color(accent) : .white
@@ -284,6 +288,26 @@ final class ChatViewController: UIViewController {
             UIView.animate(withDuration: 0.2, animations: change)
         } else {
             change()
+        }
+    }
+
+    /// The chatbot's own picture in the avatar's circle, over its initials, once it has loaded; the initials alone while it loads, when it does not, or when there is none.
+    private func showPicture(_ url: URL?) {
+        guard url != pictureURL else { return }
+        pictureURL = url
+        pictureLoad?.cancel()
+        avatar.picture = nil
+        guard let url else { return }
+        pictureLoad = Task { [weak self] in
+            let image = await AvatarPicture.load(url)
+            // A newer picture, or none, may have been asked for meanwhile.
+            guard let self, !Task.isCancelled, self.pictureURL == url else { return }
+            guard let image else {
+                // Asked for again the next time the header changes, as after the next message: the phone may have been offline.
+                self.pictureURL = nil
+                return
+            }
+            UIView.transition(with: self.avatar, duration: 0.2, options: .transitionCrossDissolve) { self.avatar.picture = image }
         }
     }
 
@@ -353,15 +377,45 @@ final class ChatViewController: UIViewController {
     }
 }
 
-/// The chatbot's initials in a circle that grows with them: UIKit sets a new font as the phone's text size changes, and the circle follows from it.
+/// The chatbot's initials in a circle that grows with them: UIKit sets a new font as the phone's text size changes, and the circle follows from it. Its own picture, when it has one, fills the circle in their place.
 final class AvatarLabel: UILabel {
+    private let pictureView = UIImageView()
+
+    /// The chatbot's own picture, drawn over the circle with the initials left out; nil shows them.
+    var picture: UIImage? {
+        get { pictureView.image }
+        set {
+            pictureView.image = newValue
+            pictureView.isHidden = newValue == nil
+            // Not drawn under a picture: a logo's see-through parts would show them.
+            setNeedsDisplay()
+        }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        pictureView.contentMode = .scaleAspectFill
+        pictureView.clipsToBounds = true
+        pictureView.isHidden = true
+        pictureView.accessibilityIdentifier = "chatfrom.avatar.picture"
+        addSubview(pictureView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
     override var intrinsicContentSize: CGSize {
         let side = (font.pointSize * 2.5).rounded()
         return CGSize(width: side, height: side)
     }
 
+    override func drawText(in rect: CGRect) {
+        if pictureView.image == nil { super.drawText(in: rect) }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         layer.cornerRadius = bounds.height / 2
+        pictureView.frame = bounds
     }
 }

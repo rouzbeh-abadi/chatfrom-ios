@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- The header shows the chatbot's own picture, when it has one under Deploy, Appearance, in place of its initials. It is loaded from ChatFrom alone, with no cookie, and the app's URL cache keeps it.
+
 ## 0.2.0
 
 - For a chatbot with the RevenueCat tool, a customer can ask about their own subscription. `ChatFrom.revenueCatAppUserId` passes on RevenueCat's anonymous id, and `ChatFrom.sharesAppStoreSubscriptions` the App Store's signed word on the app's subscriptions, read with StoreKit 2. A token from your server, passed to `identify(userId:userToken:)`, works for a signed-in customer.
