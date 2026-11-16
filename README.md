@@ -134,6 +134,8 @@ The chat and a random visitor id are kept in the web view's storage for ChatFrom
 
 The SDK itself stores two things in `UserDefaults`, in a store of its own: a random value for that hash, and whether someone is signed in. It never stores the token, the RevenueCat id or the App Store's subscriptions.
 
+When the chatbot has a picture of its own, set under Deploy, the SDK loads it from ChatFrom as the chat page loads, and keeps it in a cache of the SDK's own, up to 20 MB in the app's Caches folder, which iOS may empty when space runs low. The request carries no cookie or stored credential of the app's, and names the SDK in place of the app.
+
 The web view's storage is the app's default one, shared with your other web views. Clearing all of it, with `WKWebsiteDataStore.default()`, also forgets remembered chats. `stop()` removes the bubble only: the chat page stays loaded for the app's run, for rows and `open`, and `logout()` is what forgets the person.
 
 ## Good to know

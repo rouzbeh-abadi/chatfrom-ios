@@ -43,6 +43,43 @@ final class BridgeMessageTests: XCTestCase {
         XCTAssertEqual(config.bubbleHeight, 64)
     }
 
+    func testAChatbotsPictureIsLoadedFromThePagesOwnSiteAlone() throws {
+        let page = try XCTUnwrap(URL(string: "https://chatfrom.io/mobile/6f1c0000-0000-4000-8000-000000000001"))
+        let picture = { (avatar: Any?) in ChatConfig(["live": true, "avatar": avatar as Any])?.avatarURL(page: page) }
+        let path = "/api/public/6f1c0000-0000-4000-8000-000000000001/avatar/0123456789abcdef"
+        XCTAssertEqual(picture(path)?.absoluteString, "https://chatfrom.io\(path)")
+        XCTAssertEqual(picture("https://chatfrom.io\(path)")?.absoluteString, "https://chatfrom.io\(path)")
+        // A scheme or host in capitals is the same site.
+        XCTAssertEqual(picture("HTTPS://ChatFrom.io\(path)")?.host?.lowercased(), "chatfrom.io")
+        // Never from anywhere else, whatever the page says.
+        XCTAssertNil(picture("https://elsewhere.example\(path)"))
+        XCTAssertNil(picture("//elsewhere.example\(path)"))
+        XCTAssertNil(picture("https://chatfrom.io@elsewhere.example\(path)"))
+        XCTAssertNil(picture("https://someone:secret@chatfrom.io\(path)"))
+        XCTAssertNil(picture("http://chatfrom.io\(path)"))
+        XCTAssertNil(picture("https://chatfrom.io:8443\(path)"))
+        XCTAssertNil(picture("data:image/png;base64,AAAA"))
+        // Nor anything on the site but a chatbot's picture, however its address tries to step out of one.
+        XCTAssertNil(picture("/favicon.ico"))
+        XCTAssertNil(picture("/api/assistants/6f1c0000-0000-4000-8000-000000000001/avatar?v=0123456789abcdef"))
+        XCTAssertNil(picture("https://chatfrom.io/api/public/6f1c0000-0000-4000-8000-000000000001/avatar/../../../evil"))
+        XCTAssertNil(picture("/api/public/6f1c0000-0000-4000-8000-000000000001/avatar/%2E%2E/%2E%2E/evil"))
+        XCTAssertNil(picture("/api/public/../avatar/0123456789abcdef"))
+        XCTAssertNil(picture("/api/public/bot/avatar/0123456789abcdef"))
+        XCTAssertNil(picture("\(path)/more"))
+        XCTAssertNil(picture("\(path)?next=/evil"))
+        XCTAssertNil(picture("/api/public/6f1c0000-0000-4000-8000-000000000001/avatar/0123456789ABCDEF"))
+        // A page with no host, such as a file, gives no picture at all.
+        XCTAssertNil(ChatConfig(["live": true, "avatar": path])?.avatarURL(page: URL(fileURLWithPath: "/tmp/mobile/bot")))
+        // None, and the initials show.
+        XCTAssertNil(picture(""))
+        XCTAssertNil(picture(NSNull()))
+        XCTAssertNil(try XCTUnwrap(ChatConfig(["live": true])).avatar)
+        // A local server for trying the SDK out, on its own port.
+        let local = try XCTUnwrap(URL(string: "http://localhost:3000/mobile/bot"))
+        XCTAssertEqual(ChatConfig(["live": true, "avatar": path])?.avatarURL(page: local)?.absoluteString, "http://localhost:3000\(path)")
+    }
+
     func testInitialsAsTheWebChatHasThem() throws {
         XCTAssertEqual(try XCTUnwrap(ChatConfig(["live": true, "display_name": "acme"])).initials, "A")
         XCTAssertEqual(try XCTUnwrap(ChatConfig(["live": true, "display_name": "  one two three "])).initials, "OT")

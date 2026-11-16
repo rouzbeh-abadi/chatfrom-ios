@@ -58,6 +58,13 @@ final class ChatViewController: UIViewController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] phase in self?.applyPhase(phase) }
             .store(in: &cancellables)
+        // The picture the session has shows at once; one that loads while the chat is open fades in.
+        avatar.picture = session.picture
+        session.$picture
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] image in self?.showPicture(image, animated: true) }
+            .store(in: &cancellables)
         applyLook(animated: false)
         applyPhase(session.phase)
     }
@@ -287,6 +294,15 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    /// The picture in the avatar's circle, over its initials, or none; a picture that has just loaded fades in.
+    private func showPicture(_ image: UIImage?, animated: Bool) {
+        guard animated else {
+            avatar.picture = image
+            return
+        }
+        UIView.transition(with: avatar, duration: 0.2, options: .transitionCrossDissolve) { self.avatar.picture = image }
+    }
+
     private func applyPhase(_ phase: ChatSession.Phase) {
         defer { lastPhase = phase }
         switch phase {
@@ -353,15 +369,47 @@ final class ChatViewController: UIViewController {
     }
 }
 
-/// The chatbot's initials in a circle that grows with them: UIKit sets a new font as the phone's text size changes, and the circle follows from it.
+/// The chatbot's initials in a circle that grows with them: UIKit sets a new font as the phone's text size changes, and the circle follows from it. Its own picture, when it has one, fills the circle in their place.
 final class AvatarLabel: UILabel {
+    private let pictureView = UIImageView()
+
+    /// The chatbot's own picture, drawn over the circle with the initials left out; nil shows them.
+    var picture: UIImage? {
+        get { pictureView.image }
+        set {
+            pictureView.image = newValue
+            pictureView.isHidden = newValue == nil
+            // Not drawn under a picture: a logo's see-through parts would show them.
+            setNeedsDisplay()
+        }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        // On white, as the web chat draws it, so a logo's see-through parts read on any colour.
+        pictureView.backgroundColor = .white
+        pictureView.contentMode = .scaleAspectFill
+        pictureView.clipsToBounds = true
+        pictureView.isHidden = true
+        pictureView.accessibilityIdentifier = "chatfrom.avatar.picture"
+        addSubview(pictureView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
     override var intrinsicContentSize: CGSize {
         let side = (font.pointSize * 2.5).rounded()
         return CGSize(width: side, height: side)
     }
 
+    override func drawText(in rect: CGRect) {
+        if pictureView.image == nil { super.drawText(in: rect) }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         layer.cornerRadius = bounds.height / 2
+        pictureView.frame = bounds
     }
 }

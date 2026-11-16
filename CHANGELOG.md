@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- The header shows the chatbot's own picture, when it has one under Deploy, Appearance, in place of its initials, on white. It is loaded as the chat page loads, before the chat opens, and a new picture takes the old one's place without the initials showing between them.
+- The picture is loaded only from its own address on the chat page's site, with no cookie or stored credential of the app's, and kept in a cache of the SDK's own in the app's Caches folder. A PNG, JPEG or WebP is drawn at the header's size, off the main thread; anything else, or one that says it is larger than 2048 pixels a side, is never unpacked.
+
 ## 0.2.0
 
 - For a chatbot with the RevenueCat tool, a customer can ask about their own subscription. `ChatFrom.revenueCatAppUserId` passes on RevenueCat's anonymous id, and `ChatFrom.sharesAppStoreSubscriptions` the App Store's signed word on the app's subscriptions, read with StoreKit 2. A token from your server, passed to `identify(userId:userToken:)`, works for a signed-in customer.

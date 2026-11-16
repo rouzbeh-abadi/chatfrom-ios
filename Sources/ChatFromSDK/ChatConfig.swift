@@ -13,11 +13,15 @@ struct ChatConfig: Equatable {
     let label: String
     /// The bubble's height in points, as the widget has them (BUBBLE_SIZES in libs/widget-icons.ts).
     let bubbleHeight: CGFloat
+    /// The chatbot's own picture, as the page gives its address on ChatFrom (`/api/public/<bot>/avatar/<version>`); nil, and the header shows its initials.
+    let avatar: String?
 
     init?(_ raw: Any?) {
         guard let raw = raw as? [String: Any], let live = raw["live"] as? Bool else { return nil }
         self.live = live
         displayName = (raw["display_name"] as? String) ?? ""
+        let picture = raw["avatar"] as? String
+        avatar = picture?.isEmpty == false ? picture : nil
         accent = raw["accent"] as? String ?? ChatColor.defaultAccent
         position = Position(rawValue: raw["position"] as? String ?? "") ?? .right
         icon = raw["icon"] as? String ?? ChatIcon.defaultName
@@ -33,6 +37,18 @@ struct ChatConfig: Equatable {
     var initials: String {
         let letters = displayName.split(whereSeparator: \.isWhitespace).prefix(2).compactMap { $0.first?.uppercased() }.joined()
         return letters.isEmpty ? "CF" : letters
+    }
+
+    /// Where to load the chatbot's picture from: its address read against the chat page's, and only a picture's address (`/api/public/<chatbot>/avatar/<version>`, nothing escaped in it, so no `..` or `%2E%2E` can step out of it) on the page's own site (its scheme, host and port, with no name or password before the host), never anywhere else.
+    func avatarURL(page: URL) -> URL? {
+        guard let avatar, let host = page.host?.lowercased(), let url = URL(string: avatar, relativeTo: page)?.absoluteURL else { return nil }
+        guard url.scheme?.lowercased() == page.scheme?.lowercased(), url.host?.lowercased() == host, url.port == page.port,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath, !path.contains("%") else { return nil }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 6, parts[0].isEmpty, parts[1] == "api", parts[2] == "public", UUID(uuidString: parts[3]) != nil, parts[4] == "avatar",
+              parts[5].count == 16, parts[5].allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { return nil }
+        return url
     }
 }
 
